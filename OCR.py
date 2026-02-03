@@ -48,6 +48,23 @@ def between(text, start, end):
     match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
     return match.group(1).strip() if match else None
 
+def extract_item_code(text):
+    """Extract ITEM code - alphanumeric pattern that represents a valid product code"""
+    item_raw = between(text, 'ITEM:', 'LINE:')
+    if not item_raw:
+        return None
+    
+    # Remove any garbage after special character sequences (——, --, @, etc.)
+    item_cleaned = re.sub(r'(——|-{2,}|@).*', '', item_raw.strip())
+    
+    # Match valid item pattern: alphanumeric (8-20 chars) optionally followed by space + single letter/number
+    # Examples: 97E733401, 84140245R, 5403297114 R, 038ZC3524 5
+    match = re.match(r'^([A-Z0-9]{7,20}(?:\s+[A-Z0-9])?)', item_cleaned.strip(), re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    
+    return None
+
 def extract_order_qty_confident(text):
     """Extract Order Qty with confidence checking"""
     order_qty_match = re.search(r'Order\s*Qty:\s*(\d+)', text, re.IGNORECASE)
@@ -96,9 +113,6 @@ def correct_ocr_errors(text):
     # 5. Fix @38 patterns (letter O misread as @)
     text = re.sub(r'@([0-9])', r'0\g<1>', text)  # @38 -> 038
     
-    # 6. Fix 8 at the start of long numbers (invoice numbers usually start with 5)
-    text = re.sub(r'(\s)8(\d{8,})', r'\g<1>5\g<2>', text)  # 8xxxxxxxx -> 5xxxxxxxx in context
-    
     # 7. Fix line/sequence numbers that appear wrong
     text = re.sub(r'(LINE:\s*)([68])(\s)', r'\g<1>0\g<3>', text, flags=re.IGNORECASE)  # LINE: 8 -> LINE: 0
     
@@ -133,7 +147,7 @@ for file_name in os.listdir(folder_path):
     div = between(text, 'DIV:', 'PLT:')
     plt = between(text, 'PLT:', 'DOC NO:')
     doc_no = between(text, 'DOC NO:', 'ITEM:')
-    item = between(text, 'ITEM:', 'LINE:')
+    item = extract_item_code(text)
 
     order_qty_match = re.search(r'Order\s*Qty:\s*(\d+)', text, re.IGNORECASE)
     order_qty = extract_order_qty_confident(text) if order_qty_match else None
