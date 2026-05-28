@@ -755,9 +755,21 @@ def main():
             raise RuntimeError("Unable to press ENTER after '00'")
         time.sleep(2)
 
-        # Switch to the latest window after ENTER (it may have opened a new window)
-        driver.switch_to.window(driver.window_handles[-1])
-        logger.info(f"Switched to window after '00' ENTER: {driver.current_url}")
+        # Switch to the HOD terminal window after ENTER (find it by URL)
+        time.sleep(2)
+        terminal_window = None
+        for handle in driver.window_handles:
+            try:
+                driver.switch_to.window(handle)
+                if "hodweb3270" in driver.current_url:
+                    terminal_window = handle
+                    break
+            except Exception:
+                continue
+        if terminal_window is None:
+            # Fallback to last window if terminal not found by URL
+            driver.switch_to.window(driver.window_handles[-1])
+        logger.info(f"Switched to terminal window after '00' ENTER: {driver.current_url}")
         time.sleep(2)
 
         # On the next page, move to the first input field in the same row (backward field navigation).
