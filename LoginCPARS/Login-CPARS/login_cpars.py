@@ -6,6 +6,8 @@ IBM HOD IMS5 Automation
 
 import logging
 import time
+import os
+import openpyxl
 
 from selenium import webdriver
 
@@ -20,6 +22,8 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 
 from webdriver_manager.chrome import ChromeDriverManager
+from src.terminal_utils import send_terminal_text, press_terminal_enter
+from src.excel_utils import paste_excel_values_to_terminal
 
 
 # =========================================================
@@ -314,6 +318,50 @@ def press_terminal_tab(driver):
     return False
 
 
+def press_terminal_backtab(driver):
+
+    def _op(body):
+        strategies = [
+            "active",
+            "body",
+            "action",
+            "focus_then_action"
+        ]
+
+        for strategy in strategies:
+            try:
+                if strategy == "active":
+                    target = driver.switch_to.active_element
+                    if target is None:
+                        continue
+                    target.send_keys(Keys.SHIFT, Keys.TAB)
+                    return True
+
+                if strategy == "body":
+                    body.send_keys(Keys.SHIFT, Keys.TAB)
+                    return True
+
+                if strategy == "action":
+                    ActionChains(driver).key_down(Keys.SHIFT).send_keys(Keys.TAB).key_up(Keys.SHIFT).perform()
+                    return True
+
+                body.click()
+                time.sleep(0.2)
+                ActionChains(driver).key_down(Keys.SHIFT).send_keys(Keys.TAB).key_up(Keys.SHIFT).perform()
+                return True
+
+            except Exception as exc:
+                logger.debug(f"BACKTAB strategy {strategy} failed: {exc}")
+
+        return False
+
+    if _run_in_terminal_context(driver, _op, "Sending BACKTAB"):
+        logger.info("BACKTAB key sent in terminal")
+        return True
+
+    return False
+
+
 def send_terminal_credentials(driver, username, password):
 
     # Give the terminal login screen a moment to settle before typing credentials.
@@ -366,34 +414,21 @@ def send_terminal_credentials(driver, username, password):
 # =========================================================
 
 def main():
-
     global driver
 
     chrome_options = Options()
-
     chrome_options.add_argument("--start-maximized")
-
-    chrome_options.add_experimental_option(
-        "excludeSwitches",
-        ["enable-automation"]
-    )
-
-    chrome_options.add_experimental_option(
-        "useAutomationExtension",
-        False
-    )
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("useAutomationExtension", False)
 
     driver = webdriver.Chrome(
-        service=Service(
-            ChromeDriverManager().install()
-        ),
+        service=Service(ChromeDriverManager().install()),
         options=chrome_options
     )
 
     wait = WebDriverWait(driver, 30)
 
     try:
-
         # =====================================================
         # OPEN URL
         # =====================================================
@@ -663,8 +698,76 @@ def main():
             raise RuntimeError("Unable to press ENTER after terminal code 02")
 
         logger.info("Terminal code 02 entered")
+        
 
+        # Add a delay of 3 seconds before pressing F5
+        time.sleep(3)
+        logger.info("Sending F5 key to terminal")
+        if not send_terminal_text(driver, Keys.F5):
+            raise RuntimeError("Unable to send F5 key after terminal code 02")
+        
+
+        # Add a delay of 4 seconds before pressing F11
+        time.sleep(4)
+        logger.info("Sending F11 key to terminal")
+        if not send_terminal_text(driver, Keys.F11):
+            raise RuntimeError("Unable to send F11 key after F5")
         time.sleep(5)
+
+
+        # Add a delay of 4 seconds before pressing '9'
+        time.sleep(4)
+        logger.info("Sending '9' to terminal")
+        if not send_terminal_text(driver, "9"):
+            raise RuntimeError("Unable to send '9' after F11")
+        time.sleep(0.7)
+
+        logger.info("Pressing ENTER after '9'")
+        if not press_terminal_enter(driver):
+            raise RuntimeError("Unable to press ENTER after '9'")
+        time.sleep(3)
+
+        logger.info("Sending 'B' to terminal")
+        if not send_terminal_text(driver, "B"):
+            raise RuntimeError("Unable to send 'B' after ENTER")
+        time.sleep(2)
+
+
+        logger.info("Sending '00' to terminal")
+        if not send_terminal_text(driver, "00"):
+            raise RuntimeError("Unable to send '00' after 'B'")
+        time.sleep(0.7)
+        logger.info("Pressing ENTER after '00'")
+        if not press_terminal_enter(driver):
+            raise RuntimeError("Unable to press ENTER after '00'")
+        time.sleep(2)
+
+        # === PASTE EXCEL DATA INTO TERMINAL (D, E, F columns) ===
+        excel_path = "path_to_your_excel_file.xlsx"  # Update this path
+        sheet_name = "Sheet1"  # Update this sheet name if needed
+        try:
+            workbook = openpyxl.load_workbook(excel_path)
+            sheet = workbook[sheet_name]
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                values = row[3:6]  # Columns D, E, F (0-based index)
+                for value in values:
+                    if value is not None:
+                        send_terminal_text(driver, str(value))
+                        time.sleep(0.5)
+                press_terminal_enter(driver)
+                time.sleep(1)
+            logger.info("Excel values pasted into terminal successfully.")
+        except Exception as e:
+            logger.error(f"Failed to paste Excel values to terminal: {str(e)}", exc_info=True)
+            raise
+
+        # On the next page, move to the first input field in the same row (backward field navigation).
+        logger.info("Positioning cursor to first input field in current row on next terminal page")
+        if not press_terminal_backtab(driver):
+            raise RuntimeError("Unable to position cursor to first input field in row on next page")
+        if not press_terminal_backtab(driver):
+            raise RuntimeError("Unable to apply additional BACKTAB on next page")
+        time.sleep(1)
 
         logger.info(
             "Automation completed successfully"
@@ -675,7 +778,6 @@ def main():
         # =====================================================
 
         while True:
-
             time.sleep(1)
 
     except Exception as e:
@@ -688,7 +790,6 @@ def main():
     finally:
 
         logger.info("Script finished")
-
         # driver.quit()
 
 
