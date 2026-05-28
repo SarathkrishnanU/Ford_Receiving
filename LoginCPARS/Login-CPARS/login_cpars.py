@@ -151,6 +151,12 @@ def _run_in_terminal_context(driver, operation, op_name):
 
     global TERMINAL_CONTEXT_INDEX
 
+    # Always switch to the latest window before interacting with the terminal
+    try:
+        driver.switch_to.window(driver.window_handles[-1])
+    except Exception as exc:
+        logger.debug(f"Could not switch to latest window: {exc}")
+
     contexts = _terminal_contexts(driver)
 
     for idx in _ordered_context_indices(contexts):
@@ -705,7 +711,11 @@ def main():
         logger.info("Sending F5 key to terminal")
         if not send_terminal_text(driver, Keys.F5):
             raise RuntimeError("Unable to send F5 key after terminal code 02")
-        
+
+        # Switch to the latest window after F5 (it may have opened a new window)
+        time.sleep(2)
+        driver.switch_to.window(driver.window_handles[-1])
+        logger.info(f"Switched to window after F5: {driver.current_url}")
 
         # Add a delay of 4 seconds before pressing F11
         time.sleep(4)
@@ -713,7 +723,6 @@ def main():
         if not send_terminal_text(driver, Keys.F11):
             raise RuntimeError("Unable to send F11 key after F5")
         time.sleep(5)
-
 
         # Switch to the latest window after F11 (it may have opened a new window)
         driver.switch_to.window(driver.window_handles[-1])
@@ -762,17 +771,55 @@ def main():
         # === PASTE EXCEL DATA INTO TERMINAL (D, E, F columns) ===
         excel_path = r"C:\Users\skrishnan1\Videos\Proj\LoginCPARS\Login-CPARS\Input\Ford Receiving - Input.xlsx"
         sheet_name = "Sheet1"  # Update this sheet name if needed
+        from datetime import datetime
+        screenshots_dir = r"C:\Users\skrishnan1\Videos\Ford Project Test"
+        os.makedirs(screenshots_dir, exist_ok=True)
         try:
             workbook = openpyxl.load_workbook(excel_path)
             sheet = workbook[sheet_name]
             for row in sheet.iter_rows(min_row=2, values_only=True):
+                col_a_value = str(row[0]).strip() if row[0] is not None else "unknown"
                 values = row[3:6]  # Columns D, E, F (0-based index)
                 for value in values:
                     if value is not None:
                         send_terminal_text(driver, str(value))
                         time.sleep(0.5)
                 press_terminal_enter(driver)
-                time.sleep(1)
+                time.sleep(2)  # Wait for terminal to display result
+
+                # Take screenshot named after Column A value
+                screenshot_name = f"{col_a_value}_{datetime.now().strftime('%Y%m%d')}.png"
+                screenshot_path = os.path.join(screenshots_dir, screenshot_name)
+
+                # Crop to just the black terminal area using Pillow
+                from PIL import Image, ImageChops
+                import io
+                png_bytes = driver.get_screenshot_as_png()
+                img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+                width, height = img.size
+
+                # Scan rows/cols to find the bounding box of the black terminal area
+                # Black terminal pixels are very dark (R+G+B < 30 threshold per channel)
+                pixels = img.load()
+                min_x, min_y, max_x, max_y = width, height, 0, 0
+                for y in range(height):
+                    for x in range(width):
+                        r, g, b = pixels[x, y]
+                        if r < 30 and g < 30 and b < 30:
+                            min_x = min(min_x, x)
+                            min_y = min(min_y, y)
+                            max_x = max(max_x, x)
+                            max_y = max(max_y, y)
+
+                if max_x > min_x and max_y > min_y:
+                    cropped = img.crop((min_x, min_y, max_x + 1, max_y + 1))
+                else:
+                    # Fallback: save full screenshot if black area not detected
+                    cropped = img
+
+                cropped.save(screenshot_path)
+                logger.info(f"Screenshot saved: {screenshot_path}")
+
             logger.info("Excel values pasted into terminal successfully.")
         except Exception as e:
             logger.error(f"Failed to paste Excel values to terminal: {str(e)}", exc_info=True)
