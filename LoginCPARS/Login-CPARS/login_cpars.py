@@ -715,6 +715,10 @@ def main():
         time.sleep(5)
 
 
+        # Switch to the latest window after F11 (it may have opened a new window)
+        driver.switch_to.window(driver.window_handles[-1])
+        logger.info(f"Switched to window after F11: {driver.current_url}")
+
         # Add a delay of 4 seconds before pressing '9'
         time.sleep(4)
         logger.info("Sending '9' to terminal")
@@ -742,8 +746,21 @@ def main():
             raise RuntimeError("Unable to press ENTER after '00'")
         time.sleep(2)
 
+        # Switch to the latest window after ENTER (it may have opened a new window)
+        driver.switch_to.window(driver.window_handles[-1])
+        logger.info(f"Switched to window after '00' ENTER: {driver.current_url}")
+        time.sleep(2)
+
+        # On the next page, move to the first input field in the same row (backward field navigation).
+        logger.info("Positioning cursor to first input field in current row on next terminal page")
+        if not press_terminal_backtab(driver):
+            raise RuntimeError("Unable to position cursor to first input field in row on next page")
+        if not press_terminal_backtab(driver):
+            raise RuntimeError("Unable to apply additional BACKTAB on next page")
+        time.sleep(2)
+
         # === PASTE EXCEL DATA INTO TERMINAL (D, E, F columns) ===
-        excel_path = "path_to_your_excel_file.xlsx"  # Update this path
+        excel_path = r"C:\Users\skrishnan1\Videos\Proj\LoginCPARS\Login-CPARS\Input\Ford Receiving - Input.xlsx"
         sheet_name = "Sheet1"  # Update this sheet name if needed
         try:
             workbook = openpyxl.load_workbook(excel_path)
@@ -760,14 +777,6 @@ def main():
         except Exception as e:
             logger.error(f"Failed to paste Excel values to terminal: {str(e)}", exc_info=True)
             raise
-
-        # On the next page, move to the first input field in the same row (backward field navigation).
-        logger.info("Positioning cursor to first input field in current row on next terminal page")
-        if not press_terminal_backtab(driver):
-            raise RuntimeError("Unable to position cursor to first input field in row on next page")
-        if not press_terminal_backtab(driver):
-            raise RuntimeError("Unable to apply additional BACKTAB on next page")
-        time.sleep(1)
 
         logger.info(
             "Automation completed successfully"
