@@ -22,6 +22,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import InvalidSessionIdException, WebDriverException
 from src.terminal_utils import send_terminal_text, press_terminal_enter
 from src.excel_utils import paste_excel_values_to_terminal
 
@@ -415,6 +416,44 @@ def send_terminal_credentials(driver, username, password):
     logger.info("Terminal password entered after fallback")
 
 
+def _terminal_contains_text(driver, text):
+    """Return True if the given text is found anywhere in the terminal page."""
+    try:
+        driver.switch_to.window(driver.window_handles[-1])
+    except Exception:
+        pass
+
+    # Check main content
+    try:
+        driver.switch_to.default_content()
+        if text in driver.page_source:
+            return True
+    except Exception:
+        pass
+
+    # Check iframes
+    try:
+        iframes = driver.find_elements(By.TAG_NAME, "iframe")
+        for iframe in iframes:
+            try:
+                driver.switch_to.default_content()
+                driver.switch_to.frame(iframe)
+                if text in driver.page_source:
+                    driver.switch_to.default_content()
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+
+    return False
+
+
 # =========================================================
 # MAIN
 # =========================================================
@@ -424,6 +463,10 @@ def main():
 
     chrome_options = Options()
     chrome_options.add_argument("--start-maximized")
+    chrome_options.add_argument("--disable-component-update")
+    chrome_options.add_argument("--no-first-run")
+    chrome_options.add_argument("--no-default-browser-check")
+    chrome_options.add_argument("--disable-features=ChromeWhatsNew,BackForwardCache")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option("useAutomationExtension", False)
 
@@ -513,8 +556,9 @@ def main():
         # 3270 ACCESS
         # =====================================================
 
+        wait60 = WebDriverWait(driver, 60)
         click_element(
-            wait,
+            wait60,
             By.XPATH,
             "//a[@title='3270 Access']",
             "3270 Access",
@@ -677,7 +721,7 @@ def main():
         logger.info("IMS5 entered")
 
         # After IMS5, terminal may take a few seconds to present the credential input state.
-        time.sleep(8)
+        time.sleep(5)
 
         # =====================================================
         # SEND USER ID AND PASSWORD IN TERMINAL
@@ -698,7 +742,7 @@ def main():
         if not send_terminal_text(driver, "02"):
             raise RuntimeError("Unable to send terminal code 02")
 
-        time.sleep(0.7)
+        time.sleep(3)
 
         if not press_terminal_enter(driver):
             raise RuntimeError("Unable to press ENTER after terminal code 02")
@@ -707,33 +751,28 @@ def main():
         
 
         # Add a delay of 3 seconds before pressing F5
-        time.sleep(3)
+        time.sleep(4)
         logger.info("Sending F5 key to terminal")
         if not send_terminal_text(driver, Keys.F5):
             raise RuntimeError("Unable to send F5 key after terminal code 02")
 
-        # Switch to the latest window after F5 (it may have opened a new window)
-        time.sleep(2)
-        driver.switch_to.window(driver.window_handles[-1])
-        logger.info(f"Switched to window after F5: {driver.current_url}")
+        
 
         # Add a delay of 4 seconds before pressing F11
         time.sleep(4)
         logger.info("Sending F11 key to terminal")
         if not send_terminal_text(driver, Keys.F11):
             raise RuntimeError("Unable to send F11 key after F5")
-        time.sleep(5)
+        
 
-        # Switch to the latest window after F11 (it may have opened a new window)
-        driver.switch_to.window(driver.window_handles[-1])
-        logger.info(f"Switched to window after F11: {driver.current_url}")
+       
 
         # Add a delay of 4 seconds before pressing '9'
-        time.sleep(4)
+        time.sleep(3)
         logger.info("Sending '9' to terminal")
         if not send_terminal_text(driver, "9"):
             raise RuntimeError("Unable to send '9' after F11")
-        time.sleep(0.7)
+        time.sleep(2)
 
         logger.info("Pressing ENTER after '9'")
         if not press_terminal_enter(driver):
@@ -749,27 +788,31 @@ def main():
         logger.info("Sending '00' to terminal")
         if not send_terminal_text(driver, "00"):
             raise RuntimeError("Unable to send '00' after 'B'")
-        time.sleep(0.7)
+        time.sleep(1)
         logger.info("Pressing ENTER after '00'")
         if not press_terminal_enter(driver):
             raise RuntimeError("Unable to press ENTER after '00'")
         time.sleep(2)
 
         # Switch to the HOD terminal window after ENTER (find it by URL)
-        time.sleep(2)
-        terminal_window = None
-        for handle in driver.window_handles:
-            try:
-                driver.switch_to.window(handle)
-                if "hodweb3270" in driver.current_url:
-                    terminal_window = handle
-                    break
-            except Exception:
-                continue
-        if terminal_window is None:
-            # Fallback to last window if terminal not found by URL
-            driver.switch_to.window(driver.window_handles[-1])
-        logger.info(f"Switched to terminal window after '00' ENTER: {driver.current_url}")
+        time.sleep(4)
+        try:
+            terminal_window = None
+            for handle in driver.window_handles:
+                try:
+                    driver.switch_to.window(handle)
+                    if "hodweb3270" in driver.current_url:
+                        terminal_window = handle
+                        break
+                except Exception:
+                    continue
+            if terminal_window is None:
+                # Fallback to last window if terminal not found by URL
+                driver.switch_to.window(driver.window_handles[-1])
+            logger.info(f"Switched to terminal window after '00' ENTER: {driver.current_url}")
+        except (InvalidSessionIdException, WebDriverException) as e:
+            logger.error(f"Browser session lost after ENTER on '00': {e}")
+            raise
         time.sleep(2)
 
         # On the next page, move to the first input field in the same row (backward field navigation).
@@ -792,47 +835,105 @@ def main():
             for row in sheet.iter_rows(min_row=2, values_only=True):
                 col_a_value = str(row[0]).strip() if row[0] is not None else "unknown"
                 values = row[3:6]  # Columns D, E, F (0-based index)
-                for value in values:
-                    if value is not None:
-                        send_terminal_text(driver, str(value))
-                        time.sleep(0.5)
-                press_terminal_enter(driver)
-                time.sleep(2)  # Wait for terminal to display result
+                try:
+                    for value in values:
+                        if value is not None:
+                            send_terminal_text(driver, str(value))
+                            time.sleep(5)
+                    press_terminal_enter(driver)
+                    time.sleep(2)  # Wait for terminal to display result
 
-                # Take screenshot named after Column A value
-                screenshot_name = f"{col_a_value}_{datetime.now().strftime('%Y%m%d')}.png"
-                screenshot_path = os.path.join(screenshots_dir, screenshot_name)
+                    # Take screenshot named after Column A value
+                    screenshot_name = f"{col_a_value}_{datetime.now().strftime('%Y%m%d')}.png"
+                    screenshot_path = os.path.join(screenshots_dir, screenshot_name)
 
-                # Crop to just the black terminal area using Pillow
-                from PIL import Image, ImageChops
-                import io
-                png_bytes = driver.get_screenshot_as_png()
-                img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-                width, height = img.size
+                    # Crop to just the black terminal area using Pillow
+                    from PIL import Image, ImageChops
+                    import io
+                    png_bytes = driver.get_screenshot_as_png()
+                    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+                    width, height = img.size
 
-                # Scan rows/cols to find the bounding box of the black terminal area
-                # Black terminal pixels are very dark (R+G+B < 30 threshold per channel)
-                pixels = img.load()
-                min_x, min_y, max_x, max_y = width, height, 0, 0
-                for y in range(height):
-                    for x in range(width):
-                        r, g, b = pixels[x, y]
-                        if r < 30 and g < 30 and b < 30:
-                            min_x = min(min_x, x)
-                            min_y = min(min_y, y)
-                            max_x = max(max_x, x)
-                            max_y = max(max_y, y)
+                    # Scan rows/cols to find the bounding box of the black terminal area
+                    # Black terminal pixels are very dark (R+G+B < 30 threshold per channel)
+                    pixels = img.load()
+                    min_x, min_y, max_x, max_y = width, height, 0, 0
+                    for y in range(height):
+                        for x in range(width):
+                            r, g, b = pixels[x, y]
+                            if r < 30 and g < 30 and b < 30:
+                                min_x = min(min_x, x)
+                                min_y = min(min_y, y)
+                                max_x = max(max_x, x)
+                                max_y = max(max_y, y)
 
-                if max_x > min_x and max_y > min_y:
-                    cropped = img.crop((min_x, min_y, max_x + 1, max_y + 1))
-                else:
-                    # Fallback: save full screenshot if black area not detected
-                    cropped = img
+                    if max_x > min_x and max_y > min_y:
+                        cropped = img.crop((min_x, min_y, max_x + 1, max_y + 1))
+                    else:
+                        # Fallback: save full screenshot if black area not detected
+                        cropped = img
 
-                cropped.save(screenshot_path)
-                logger.info(f"Screenshot saved: {screenshot_path}")
+                    cropped.save(screenshot_path)
+                    logger.info(f"Screenshot saved: {screenshot_path}")
+                    del png_bytes, img, cropped
+
+                    # Press F8 to page forward and capture additional pages
+                    page_num = 1
+                    while True:
+                        try:
+                            if not send_terminal_text(driver, Keys.F8):
+                                logger.warning("Unable to send F8 key for paging")
+                                break
+                            time.sleep(2)
+
+                            # Check BEFORE taking screenshot — stop if no more pages
+                            if _terminal_contains_text(driver, "PAGING FORWARD INVALID"):
+                                logger.info("PAGING FORWARD INVALID detected - stopping paging for this row")
+                                break
+
+                            screenshot_name_paged = f"{col_a_value}_{datetime.now().strftime('%Y%m%d')}-{page_num}.png"
+                            screenshot_path_paged = os.path.join(screenshots_dir, screenshot_name_paged)
+
+                            png_bytes_paged = driver.get_screenshot_as_png()
+                            img_paged = Image.open(io.BytesIO(png_bytes_paged)).convert("RGB")
+                            width_p, height_p = img_paged.size
+                            pixels_p = img_paged.load()
+                            min_xp, min_yp, max_xp, max_yp = width_p, height_p, 0, 0
+                            for yp in range(height_p):
+                                for xp in range(width_p):
+                                    rp, gp, bp = pixels_p[xp, yp]
+                                    if rp < 30 and gp < 30 and bp < 30:
+                                        min_xp = min(min_xp, xp)
+                                        min_yp = min(min_yp, yp)
+                                        max_xp = max(max_xp, xp)
+                                        max_yp = max(max_yp, yp)
+
+                            if max_xp > min_xp and max_yp > min_yp:
+                                cropped_paged = img_paged.crop((min_xp, min_yp, max_xp + 1, max_yp + 1))
+                            else:
+                                cropped_paged = img_paged
+
+                            cropped_paged.save(screenshot_path_paged)
+                            logger.info(f"Paged screenshot saved: {screenshot_path_paged}")
+                            del png_bytes_paged, img_paged, cropped_paged
+                            page_num += 1
+                        except InvalidSessionIdException:
+                            logger.warning(f"Browser session lost during F8 paging at page {page_num} - stopping paging for row '{col_a_value}'")
+                            raise
+
+                    logger.info(f"Row '{col_a_value}' completed successfully.")
+
+                except InvalidSessionIdException:
+                    logger.error(f"Browser session lost while processing row '{col_a_value}' - stopping all remaining rows")
+                    raise  # Browser is dead; cannot continue with more rows
+                except Exception as row_exc:
+                    logger.error(f"Error processing row '{col_a_value}': {row_exc}", exc_info=True)
+                    # Continue to next row for non-fatal errors
 
             logger.info("Excel values pasted into terminal successfully.")
+        except InvalidSessionIdException:
+            logger.error("Browser session lost - automation stopped early")
+            raise
         except Exception as e:
             logger.error(f"Failed to paste Excel values to terminal: {str(e)}", exc_info=True)
             raise
