@@ -369,6 +369,94 @@ def press_terminal_backtab(driver):
     return False
 
 
+def press_terminal_down_arrow(driver):
+
+    def _op(body):
+        strategies = [
+            "active",
+            "body",
+            "action",
+            "focus_then_action"
+        ]
+
+        for strategy in strategies:
+            try:
+                if strategy == "active":
+                    target = driver.switch_to.active_element
+                    if target is None:
+                        continue
+                    target.send_keys(Keys.ARROW_DOWN)
+                    return True
+
+                if strategy == "body":
+                    body.send_keys(Keys.ARROW_DOWN)
+                    return True
+
+                if strategy == "action":
+                    ActionChains(driver).send_keys(Keys.ARROW_DOWN).perform()
+                    return True
+
+                body.click()
+                time.sleep(0.2)
+                ActionChains(driver).send_keys(Keys.ARROW_DOWN).perform()
+                return True
+
+            except Exception as exc:
+                logger.debug(f"DOWN ARROW strategy {strategy} failed: {exc}")
+
+        return False
+
+    if _run_in_terminal_context(driver, _op, "Sending DOWN ARROW"):
+        logger.info("DOWN ARROW key sent in terminal")
+        return True
+
+    return False
+
+
+def press_terminal_right_arrow(driver):
+
+    def _op(body):
+        strategies = [
+            "active",
+            "body",
+            "action",
+            "focus_then_action"
+        ]
+
+        for strategy in strategies:
+            try:
+                if strategy == "active":
+                    target = driver.switch_to.active_element
+                    if target is None:
+                        continue
+                    target.send_keys(Keys.ARROW_RIGHT)
+                    return True
+
+                if strategy == "body":
+                    body.send_keys(Keys.ARROW_RIGHT)
+                    return True
+
+                if strategy == "action":
+                    ActionChains(driver).send_keys(Keys.ARROW_RIGHT).perform()
+                    return True
+
+                body.click()
+                time.sleep(0.2)
+                ActionChains(driver).send_keys(Keys.ARROW_RIGHT).perform()
+                return True
+
+            except Exception as exc:
+                logger.debug(f"RIGHT ARROW strategy {strategy} failed: {exc}")
+
+        return False
+
+    if _run_in_terminal_context(driver, _op, "Sending RIGHT ARROW"):
+        logger.info("RIGHT ARROW key sent in terminal")
+        return True
+
+    return False
+
+
 def send_terminal_credentials(driver, username, password):
 
     # Give the terminal login screen a moment to settle before typing credentials.
@@ -815,14 +903,6 @@ def main():
             raise
         time.sleep(2)
 
-        # On the next page, move to the first input field in the same row (backward field navigation).
-        logger.info("Positioning cursor to first input field in current row on next terminal page")
-        if not press_terminal_backtab(driver):
-            raise RuntimeError("Unable to position cursor to first input field in row on next page")
-        if not press_terminal_backtab(driver):
-            raise RuntimeError("Unable to apply additional BACKTAB on next page")
-        time.sleep(2)
-
         # === PASTE EXCEL DATA INTO TERMINAL (D, E, F columns) ===
         excel_path = r"C:\Users\skrishnan1\Videos\Proj\LoginCPARS\Login-CPARS\Input\Ford Receiving - Input.xlsx"
         sheet_name = "Sheet1"  # Update this sheet name if needed
@@ -832,10 +912,24 @@ def main():
         try:
             workbook = openpyxl.load_workbook(excel_path)
             sheet = workbook[sheet_name]
-            for row in sheet.iter_rows(min_row=2, values_only=True):
+            for row_index, row in enumerate(sheet.iter_rows(min_row=2, values_only=True)):
                 col_a_value = str(row[0]).strip() if row[0] is not None else "unknown"
                 values = row[3:6]  # Columns D, E, F (0-based index)
                 try:
+                    # Position cursor: BACKTAB×2 for first row, DOWN+RIGHT for subsequent rows
+                    if row_index == 0:
+                        logger.info("Positioning cursor with BACKTAB×2 for first row")
+                        if not press_terminal_backtab(driver):
+                            raise RuntimeError("Unable to position cursor to first input field (BACKTAB 1)")
+                        if not press_terminal_backtab(driver):
+                            raise RuntimeError("Unable to position cursor to first input field (BACKTAB 2)")
+                    else:
+                        logger.info("Positioning cursor with DOWN+RIGHT for next row")
+                        if not press_terminal_down_arrow(driver):
+                            raise RuntimeError("Unable to send DOWN ARROW to position cursor")
+                        if not press_terminal_right_arrow(driver):
+                            raise RuntimeError("Unable to send RIGHT ARROW to position cursor")
+                    time.sleep(2)
                     for value in values:
                         if value is not None:
                             send_terminal_text(driver, str(value))
