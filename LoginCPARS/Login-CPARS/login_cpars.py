@@ -562,6 +562,7 @@ def main():
         service=Service(ChromeDriverManager().install()),
         options=chrome_options
     )
+    driver.set_page_load_timeout(300)  # 5 minutes for slow portal pages
 
     wait = WebDriverWait(driver, 30)
 
@@ -748,7 +749,7 @@ def main():
 
         logger.info("Waiting for North America")
 
-        north_america = wait.until(
+        north_america = wait60.until(
             EC.element_to_be_clickable(
                 (
                     By.XPATH,
@@ -853,8 +854,6 @@ def main():
             raise RuntimeError("Unable to send F11 key after F5")
         
 
-       
-
         # Add a delay of 4 seconds before pressing '9'
         time.sleep(3)
         logger.info("Sending '9' to terminal")
@@ -934,6 +933,11 @@ def main():
                         if value is not None:
                             send_terminal_text(driver, str(value))
                             time.sleep(5)
+                            # Verify the typed value appears in the terminal
+                            if _terminal_contains_text(driver, str(value)):
+                                logger.info(f"Verified value '{value}' is visible in terminal")
+                            else:
+                                logger.warning(f"Value '{value}' NOT found in terminal after typing - cursor may be in wrong position")
                     press_terminal_enter(driver)
                     time.sleep(2)  # Wait for terminal to display result
 
