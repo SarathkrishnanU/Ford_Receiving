@@ -542,6 +542,16 @@ def _terminal_contains_text(driver, text):
     return False
 
 
+def _wait_for_terminal_text(driver, text, timeout=30, poll=1):
+    """Poll until text appears in terminal or timeout (seconds) is reached."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _terminal_contains_text(driver, text):
+            return True
+        time.sleep(poll)
+    return False
+
+
 # =========================================================
 # MAIN
 # =========================================================
@@ -821,15 +831,13 @@ def main():
         logger.info("IMS5 entered")
 
         # After IMS5, terminal may take a few seconds to present the credential input state.
-        time.sleep(5)
-
         # =====================================================
         # CHECK FOR 'IMS5  Logon' BEFORE SENDING CREDENTIALS
         # =====================================================
 
         logger.info("Checking terminal for 'IMS5  Logon' before entering credentials")
 
-        if not _terminal_contains_text(driver, "IMS5  Logon"):
+        if not _wait_for_terminal_text(driver, "IMS5  Logon", timeout=30):
             raise RuntimeError("'IMS5  Logon' not found in terminal — cannot proceed with credential entry")
 
         logger.info("'IMS5  Logon' confirmed in terminal")
@@ -846,15 +854,13 @@ def main():
 
         logger.info("Waiting for next terminal page after credential submit")
 
-        time.sleep(4)
-
         # =====================================================
         # CHECK FOR 'IMS5  Application Menu' BEFORE ENTERING 02
         # =====================================================
 
         logger.info("Checking terminal for 'IMS5  Application Menu' before entering 02")
 
-        if not _terminal_contains_text(driver, "IMS5  Application Menu"):
+        if not _wait_for_terminal_text(driver, "IMS5  Application Menu", timeout=30):
             raise RuntimeError("'IMS5  Application Menu' not found in terminal — cannot proceed with entering 02")
 
         logger.info("'IMS5  Application Menu' confirmed in terminal")
@@ -870,14 +876,14 @@ def main():
             raise RuntimeError("Unable to press ENTER after terminal code 02")
 
         logger.info("Terminal code 02 entered")
-        time.sleep(4)
+
         # =====================================================
         # CHECK FOR 'CPARS  MASTER  MENU' BEFORE PRESSING F5
         # =====================================================
 
         logger.info("Checking terminal for 'CPARS  MASTER  MENU' before pressing F5")
 
-        if not _terminal_contains_text(driver, "CPARS  MASTER  MENU"):
+        if not _wait_for_terminal_text(driver, "CPARS  MASTER  MENU", timeout=30):
             raise RuntimeError("'CPARS  MASTER  MENU' not found in terminal — cannot proceed with F5")
 
         logger.info("'CPARS  MASTER  MENU' confirmed in terminal")
@@ -891,10 +897,10 @@ def main():
         # =====================================================
         # CHECK FOR 'CPARS-O-GRAM' BEFORE PRESSING F11
         # =====================================================
-        time.sleep(4)
+
         logger.info("Checking terminal for 'CPARS-O-GRAM' before pressing F11")
 
-        if not _terminal_contains_text(driver, "CPARS-O-GRAM"):
+        if not _wait_for_terminal_text(driver, "CPARS-O-GRAM", timeout=30):
             raise RuntimeError("'CPARS-O-GRAM' not found in terminal — cannot proceed with F11")
 
         logger.info("'CPARS-O-GRAM' confirmed in terminal")
@@ -908,10 +914,10 @@ def main():
         # =====================================================
         # CHECK FOR 'CPARS REQUISITION MENU' BEFORE PRESSING '9'
         # =====================================================
-        time.sleep(6)
+
         logger.info("Checking terminal for 'CPARS REQUISITION MENU' before pressing '9'")
 
-        if not _terminal_contains_text(driver, "CPARS REQUISITION MENU"):
+        if not _wait_for_terminal_text(driver, "CPARS REQUISITION MENU", timeout=30):
             raise RuntimeError("'CPARS REQUISITION MENU' not found in terminal — cannot proceed with pressing '9'")
 
         logger.info("'CPARS REQUISITION MENU' confirmed in terminal")
@@ -926,7 +932,6 @@ def main():
         logger.info("Pressing ENTER after '9'")
         if not press_terminal_enter(driver):
             raise RuntimeError("Unable to press ENTER after '9'")
-        time.sleep(6)
 
         # =====================================================
         # CHECK FOR 'DIVISION ==>' BEFORE SENDING 'B'
@@ -934,7 +939,7 @@ def main():
 
         logger.info("Checking terminal for 'DIVISION ==>' before sending 'B'")
 
-        if not _terminal_contains_text(driver, "DIVISION"):
+        if not _wait_for_terminal_text(driver, "DIVISION", timeout=30):
             raise RuntimeError("'DIVISION ==>' not found in terminal — cannot proceed with sending 'B'")
 
         logger.info("'DIVISION ==>' confirmed in terminal")
