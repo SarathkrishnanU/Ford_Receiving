@@ -645,7 +645,7 @@ def main():
         # 3270 ACCESS
         # =====================================================
 
-        wait60 = WebDriverWait(driver, 60)
+        wait60 = WebDriverWait(driver, 120)
         click_element(
             wait60,
             By.XPATH,
@@ -794,6 +794,17 @@ def main():
         # =====================================================
 
         # =====================================================
+        # CHECK FOR FAC#A BEFORE SENDING IMS5
+        # =====================================================
+        time.sleep(4)
+        logger.info("Checking terminal for 'FAC#A' before sending IMS5")
+
+        if not _terminal_contains_text(driver, "FAC#A"):
+            raise RuntimeError("'FAC#A' not found in terminal — cannot proceed with IMS5")
+
+        logger.info("'FAC#A' confirmed in terminal")
+
+        # =====================================================
         # SEND IMS5
         # =====================================================
 
@@ -813,6 +824,17 @@ def main():
         time.sleep(5)
 
         # =====================================================
+        # CHECK FOR 'IMS5  Logon' BEFORE SENDING CREDENTIALS
+        # =====================================================
+
+        logger.info("Checking terminal for 'IMS5  Logon' before entering credentials")
+
+        if not _terminal_contains_text(driver, "IMS5  Logon"):
+            raise RuntimeError("'IMS5  Logon' not found in terminal — cannot proceed with credential entry")
+
+        logger.info("'IMS5  Logon' confirmed in terminal")
+
+        # =====================================================
         # SEND USER ID AND PASSWORD IN TERMINAL
         # =====================================================
 
@@ -826,6 +848,17 @@ def main():
 
         time.sleep(4)
 
+        # =====================================================
+        # CHECK FOR 'IMS5  Application Menu' BEFORE ENTERING 02
+        # =====================================================
+
+        logger.info("Checking terminal for 'IMS5  Application Menu' before entering 02")
+
+        if not _terminal_contains_text(driver, "IMS5  Application Menu"):
+            raise RuntimeError("'IMS5  Application Menu' not found in terminal — cannot proceed with entering 02")
+
+        logger.info("'IMS5  Application Menu' confirmed in terminal")
+
         logger.info("Sending terminal code 02")
 
         if not send_terminal_text(driver, "02"):
@@ -837,25 +870,54 @@ def main():
             raise RuntimeError("Unable to press ENTER after terminal code 02")
 
         logger.info("Terminal code 02 entered")
-        
+        time.sleep(4)
+        # =====================================================
+        # CHECK FOR 'CPARS  MASTER  MENU' BEFORE PRESSING F5
+        # =====================================================
+
+        logger.info("Checking terminal for 'CPARS  MASTER  MENU' before pressing F5")
+
+        if not _terminal_contains_text(driver, "CPARS  MASTER  MENU"):
+            raise RuntimeError("'CPARS  MASTER  MENU' not found in terminal — cannot proceed with F5")
+
+        logger.info("'CPARS  MASTER  MENU' confirmed in terminal")
 
         # Add a delay of 3 seconds before pressing F5
-        time.sleep(4)
+        
         logger.info("Sending F5 key to terminal")
         if not send_terminal_text(driver, Keys.F5):
             raise RuntimeError("Unable to send F5 key after terminal code 02")
 
-        
+        # =====================================================
+        # CHECK FOR 'CPARS-O-GRAM' BEFORE PRESSING F11
+        # =====================================================
+        time.sleep(4)
+        logger.info("Checking terminal for 'CPARS-O-GRAM' before pressing F11")
+
+        if not _terminal_contains_text(driver, "CPARS-O-GRAM"):
+            raise RuntimeError("'CPARS-O-GRAM' not found in terminal — cannot proceed with F11")
+
+        logger.info("'CPARS-O-GRAM' confirmed in terminal")
 
         # Add a delay of 4 seconds before pressing F11
-        time.sleep(4)
+        
         logger.info("Sending F11 key to terminal")
         if not send_terminal_text(driver, Keys.F11):
             raise RuntimeError("Unable to send F11 key after F5")
-        
+
+        # =====================================================
+        # CHECK FOR 'CPARS REQUISITION MENU' BEFORE PRESSING '9'
+        # =====================================================
+        time.sleep(6)
+        logger.info("Checking terminal for 'CPARS REQUISITION MENU' before pressing '9'")
+
+        if not _terminal_contains_text(driver, "CPARS REQUISITION MENU"):
+            raise RuntimeError("'CPARS REQUISITION MENU' not found in terminal — cannot proceed with pressing '9'")
+
+        logger.info("'CPARS REQUISITION MENU' confirmed in terminal")
 
         # Add a delay of 4 seconds before pressing '9'
-        time.sleep(3)
+        
         logger.info("Sending '9' to terminal")
         if not send_terminal_text(driver, "9"):
             raise RuntimeError("Unable to send '9' after F11")
@@ -864,7 +926,18 @@ def main():
         logger.info("Pressing ENTER after '9'")
         if not press_terminal_enter(driver):
             raise RuntimeError("Unable to press ENTER after '9'")
-        time.sleep(3)
+        time.sleep(6)
+
+        # =====================================================
+        # CHECK FOR 'DIVISION ==>' BEFORE SENDING 'B'
+        # =====================================================
+
+        logger.info("Checking terminal for 'DIVISION ==>' before sending 'B'")
+
+        if not _terminal_contains_text(driver, "DIVISION"):
+            raise RuntimeError("'DIVISION ==>' not found in terminal — cannot proceed with sending 'B'")
+
+        logger.info("'DIVISION ==>' confirmed in terminal")
 
         logger.info("Sending 'B' to terminal")
         if not send_terminal_text(driver, "B"):
@@ -911,9 +984,15 @@ def main():
         try:
             workbook = openpyxl.load_workbook(excel_path)
             sheet = workbook[sheet_name]
-            for row_index, row in enumerate(sheet.iter_rows(min_row=2, values_only=True)):
-                col_a_value = str(row[0]).strip() if row[0] is not None else "unknown"
-                values = row[3:6]  # Columns D, E, F (0-based index)
+            status_col = 7  # Column G — status column (after data columns A-F)
+            for row_index, row in enumerate(sheet.iter_rows(min_row=2)):
+                col_a_value = str(row[0].value).strip() if row[0].value is not None else "unknown"
+                # Skip rows already marked as Completed
+                status_cell = sheet.cell(row=row_index + 2, column=status_col)
+                if status_cell.value == "Completed":
+                    logger.info(f"Skipping row '{col_a_value}' — already Completed")
+                    continue
+                values = (row[3].value, row[4].value, row[5].value)  # Columns D, E, F
                 try:
                     # Position cursor: BACKTAB×2 for first row, DOWN+RIGHT for subsequent rows
                     if row_index == 0:
@@ -940,6 +1019,12 @@ def main():
                                 logger.warning(f"Value '{value}' NOT found in terminal after typing - cursor may be in wrong position")
                     press_terminal_enter(driver)
                     time.sleep(2)  # Wait for terminal to display result
+
+                    # Check for error message after ENTER
+                    if _terminal_contains_text(driver, "DOCUMENT NOT ON FILE"):
+                        raise RuntimeError(f"'DOCUMENT NOT ON FILE' displayed in terminal for row '{col_a_value}' — stopping run")
+
+                    logger.info(f"'DOCUMENT NOT ON FILE' not detected — proceeding with screenshot for row '{col_a_value}'")
 
                     # Take screenshot named after Column A value
                     screenshot_name = f"{col_a_value}_{datetime.now().strftime('%Y%m%d')}.png"
@@ -987,6 +1072,9 @@ def main():
                             # Check BEFORE taking screenshot — stop if no more pages
                             if _terminal_contains_text(driver, "PAGING FORWARD INVALID"):
                                 logger.info("PAGING FORWARD INVALID detected - stopping paging for this row")
+                                status_cell.value = "Completed"
+                                workbook.save(excel_path)
+                                logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
                                 break
 
                             screenshot_name_paged = f"{col_a_value}_{datetime.now().strftime('%Y%m%d')}-{page_num}.png"
