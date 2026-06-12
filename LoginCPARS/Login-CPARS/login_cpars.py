@@ -8,6 +8,8 @@ import logging
 import time
 import os
 import openpyxl
+import tkinter as tk
+from tkinter import filedialog, messagebox
 
 from selenium import webdriver
 
@@ -559,6 +561,28 @@ def _wait_for_terminal_text(driver, text, timeout=30, poll=1):
 def main():
     global driver
 
+    # =====================================================
+    # BROWSE FOR EXCEL INPUT FILE
+    # =====================================================
+
+    root = tk.Tk()
+    root.withdraw()  # Hide the root window
+    root.attributes("-topmost", True)
+
+    excel_path = filedialog.askopenfilename(
+        title="Select Excel Input File",
+        filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
+        initialdir=r"C:\Users\skrishnan1\Videos\Proj\LoginCPARS\Login-CPARS\Input"
+    )
+
+    root.destroy()
+
+    if not excel_path:
+        messagebox.showerror("No File Selected", "No Excel file was selected. Exiting.")
+        return
+
+    logger.info(f"Excel input file: {excel_path}")
+
     chrome_options = Options()
     chrome_options.add_argument("--start-maximized")
     chrome_options.add_argument("--disable-component-update")
@@ -981,7 +1005,6 @@ def main():
         time.sleep(2)
 
         # === PASTE EXCEL DATA INTO TERMINAL (D, E, F columns) ===
-        excel_path = r"C:\Users\skrishnan1\Videos\Proj\LoginCPARS\Login-CPARS\Input\Ford Receiving - Input.xlsx"
         sheet_name = "Sheet1"  # Update this sheet name if needed
         from datetime import datetime
         screenshots_dir = r"C:\Users\skrishnan1\Videos\Ford Project Test"
@@ -1028,6 +1051,9 @@ def main():
                     # Check for error message after ENTER
                     if _terminal_contains_text(driver, "DOCUMENT NOT ON FILE"):
                         raise RuntimeError(f"'DOCUMENT NOT ON FILE' displayed in terminal for row '{col_a_value}' — stopping run")
+
+                    if _terminal_contains_text(driver, "PLEASE INQUIRE BEFORE PAGING FORWARD"):
+                        raise RuntimeError(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' displayed in terminal for row '{col_a_value}' — stopping run")
 
                     logger.info(f"'DOCUMENT NOT ON FILE' not detected — proceeding with screenshot for row '{col_a_value}'")
 
@@ -1129,9 +1155,23 @@ def main():
             logger.error(f"Failed to paste Excel values to terminal: {str(e)}", exc_info=True)
             raise
 
+        # =====================================================
+        # RUN OCR
+        # =====================================================
+
+        from src.ocr_runner import run_ocr
+        logger.info("Running OCR extraction")
+        try:
+            run_ocr()
+            logger.info("OCR extraction completed successfully")
+        except Exception as ocr_exc:
+            logger.error(f"OCR extraction failed: {ocr_exc}", exc_info=True)
+
         logger.info(
             "Automation completed successfully"
         )
+
+        messagebox.showinfo("Automation Complete", "Automation Completed.")
 
         # =====================================================
         # KEEP OPEN
