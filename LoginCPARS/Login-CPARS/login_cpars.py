@@ -5,6 +5,7 @@ IBM HOD IMS5 Automation
 """
 
 import logging
+import sys
 import time
 import os
 import openpyxl
@@ -28,14 +29,31 @@ from selenium.common.exceptions import InvalidSessionIdException, WebDriverExcep
 from src.terminal_utils import send_terminal_text, press_terminal_enter
 from src.excel_utils import paste_excel_values_to_terminal
 
+from dotenv import load_dotenv
+load_dotenv()
+
+PORTAL_USERNAME   = os.environ.get("PORTAL_USERNAME", "")
+PORTAL_PASSWORD   = os.environ.get("PORTAL_PASSWORD", "")
+TERMINAL_USERNAME = os.environ.get("TERMINAL_USERNAME", "")
+TERMINAL_PASSWORD = os.environ.get("TERMINAL_PASSWORD", "")
+CPARS_URL         = os.environ.get("CPARS_URL", "https://fsp.portal.covisint.com/ford_en_US/")
+
 
 # =========================================================
 # LOGGING
 # =========================================================
 
+# Determine log file path next to the exe (or script during development)
+_app_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+_log_path = os.path.join(_app_dir, 'LoginCPARS.log')
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(_log_path, encoding='utf-8'),
+    ]
 )
 
 logger = logging.getLogger(__name__)
@@ -554,58 +572,104 @@ def _wait_for_terminal_text(driver, text, timeout=30, poll=1):
     return False
 
 
+def _fatal_stop(message):
+    """Show error messagebox, quit browser, and exit immediately — no retry."""
+    global driver
+    logger.error(f"Fatal stop: {message}")
+    try:
+        if driver is not None:
+            driver.quit()
+            driver = None
+    except Exception:
+        pass
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showerror("Processing Stopped", message)
+    root.destroy()
+    sys.exit(1)
+
+
+def _has_uncompleted_rows(excel_path, sheet_name="Sheet1"):
+    """Return True if any row in the workbook is not yet marked Completed."""
+    try:
+        wb = openpyxl.load_workbook(excel_path)
+        sheet = wb[sheet_name]
+        for row in sheet.iter_rows(min_row=2):
+            if row[0].value is not None and row[6].value != "Completed":
+                logger.info(f"Uncompleted row found: {row[0].value}")
+                return True
+        logger.info("All rows in Excel are marked Completed.")
+        return False
+    except Exception as e:
+        logger.warning(f"Could not read Excel to check completion status: {e} — assuming rows need processing.")
+        return True  # Assume there is work to do if the file can't be read
+
+
 # =========================================================
 # MAIN
 # =========================================================
 
-def main():
+def main(_excel_path=None, _attempt=1, _max_retries=10):
     global driver
+
+    if _attempt > 1:
+        logger.info(f"--- Retry attempt {_attempt}/{_max_retries} ---")
 
     # =====================================================
     # BROWSE FOR EXCEL INPUT FILE
     # =====================================================
 
-    root = tk.Tk()
-    root.withdraw()  # Hide the root window
-    root.attributes("-topmost", True)
+    if _excel_path is None:
+        root = tk.Tk()
+        root.withdraw()  # Hide the root window
+        root.attributes("-topmost", True)
 
-    excel_path = filedialog.askopenfilename(
-        title="Select Excel Input File",
-        filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
-        initialdir=r"C:\Users\skrishnan1\Videos\Proj\LoginCPARS\Login-CPARS\Input"
-    )
+        _excel_path = filedialog.askopenfilename(
+            title="Select Excel Input File",
+            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
+            initialdir=r"C:\Users\skrishnan1\Videos\Proj\LoginCPARS\Login-CPARS\Input"
+        )
 
-    root.destroy()
+        root.destroy()
 
-    if not excel_path:
-        messagebox.showerror("No File Selected", "No Excel file was selected. Exiting.")
-        return
+        if not _excel_path:
+            messagebox.showerror("No File Selected", "No Excel file was selected. Exiting.")
+            return
 
+    excel_path = _excel_path
     logger.info(f"Excel input file: {excel_path}")
 
-    chrome_options = Options()
-    chrome_options.add_argument("--start-maximized")
-    chrome_options.add_argument("--disable-component-update")
-    chrome_options.add_argument("--no-first-run")
-    chrome_options.add_argument("--no-default-browser-check")
-    chrome_options.add_argument("--disable-features=ChromeWhatsNew,BackForwardCache")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option("useAutomationExtension", False)
+    # Check upfront — if all rows are already completed, nothing to do
+    if not _has_uncompleted_rows(excel_path, "Sheet1"):
+        logger.info("All rows already completed — no input to process.")
+        messagebox.showinfo("No Input to Process", "No input to process.")
+        return
 
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=chrome_options
-    )
-    driver.set_page_load_timeout(300)  # 5 minutes for slow portal pages
-
-    wait = WebDriverWait(driver, 30)
-
+    driver = None
     try:
+        chrome_options = Options()
+        chrome_options.add_argument("--start-maximized")
+        chrome_options.add_argument("--disable-component-update")
+        chrome_options.add_argument("--no-first-run")
+        chrome_options.add_argument("--no-default-browser-check")
+        chrome_options.add_argument("--disable-features=ChromeWhatsNew,BackForwardCache")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option("useAutomationExtension", False)
+
+        logger.info("Launching Chrome...")
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=chrome_options
+        )
+        driver.set_page_load_timeout(300)  # 5 minutes for slow portal pages
+        logger.info("Chrome launched successfully")
+
+        wait = WebDriverWait(driver, 30)
         # =====================================================
         # OPEN URL
         # =====================================================
 
-        url = "https://fsp.portal.covisint.com/ford_en_US/"
+        url = CPARS_URL
 
         logger.info(f"Opening URL: {url}")
 
@@ -626,7 +690,7 @@ def main():
             wait,
             By.ID,
             "user",
-            "JFERNANDEZ1",
+            PORTAL_USERNAME,
             "Username"
         )
 
@@ -634,7 +698,7 @@ def main():
             wait,
             By.ID,
             "password",
-            "EGCGS@2022",
+            PORTAL_PASSWORD,
             "Password"
         )
 
@@ -870,7 +934,7 @@ def main():
         # SEND USER ID AND PASSWORD IN TERMINAL
         # =====================================================
 
-        send_terminal_credentials(driver, "SSFSL11", "EGCGS14")
+        send_terminal_credentials(driver, TERMINAL_USERNAME, TERMINAL_PASSWORD)
 
         # =====================================================
         # ENTER 02 ON NEXT TERMINAL PAGE
@@ -1013,6 +1077,7 @@ def main():
             workbook = openpyxl.load_workbook(excel_path)
             sheet = workbook[sheet_name]
             status_col = 7  # Column G — status column (after data columns A-F)
+            rows_processed = 0
             for row_index, row in enumerate(sheet.iter_rows(min_row=2)):
                 col_a_value = str(row[0].value).strip() if row[0].value is not None else "unknown"
                 # Skip rows already marked as Completed
@@ -1022,9 +1087,10 @@ def main():
                     continue
                 values = (row[3].value, row[4].value, row[5].value)  # Columns D, E, F
                 try:
-                    # Position cursor: BACKTAB×2 for first row, DOWN+RIGHT for subsequent rows
-                    if row_index == 0:
-                        logger.info("Positioning cursor with BACKTAB×2 for first row")
+                    # Position cursor: BACKTAB×2 for the first row being processed this run,
+                    # DOWN+RIGHT for every subsequent row (regardless of Excel row index).
+                    if rows_processed == 0:
+                        logger.info("Positioning cursor with BACKTAB×2 for first processed row")
                         if not press_terminal_backtab(driver):
                             raise RuntimeError("Unable to position cursor to first input field (BACKTAB 1)")
                         if not press_terminal_backtab(driver):
@@ -1053,7 +1119,7 @@ def main():
                         raise RuntimeError(f"'DOCUMENT NOT ON FILE' displayed in terminal for row '{col_a_value}' — stopping run")
 
                     if _terminal_contains_text(driver, "PLEASE INQUIRE BEFORE PAGING FORWARD"):
-                        raise RuntimeError(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' displayed in terminal for row '{col_a_value}' — stopping run")
+                        raise RuntimeError(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' on initial page for row '{col_a_value}' — closing and restarting")
 
                     logger.info(f"'DOCUMENT NOT ON FILE' not detected — proceeding with screenshot for row '{col_a_value}'")
 
@@ -1064,7 +1130,9 @@ def main():
                     # Crop to just the black terminal area using Pillow
                     from PIL import Image, ImageChops
                     import io
+                    import hashlib
                     png_bytes = driver.get_screenshot_as_png()
+                    last_page_hash = hashlib.md5(png_bytes).hexdigest()
                     img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
                     width, height = img.size
 
@@ -1090,6 +1158,7 @@ def main():
                     cropped.save(screenshot_path)
                     logger.info(f"Screenshot saved: {screenshot_path}")
                     del png_bytes, img, cropped
+                    rows_processed += 1
 
                     # Press F8 to page forward and capture additional pages
                     page_num = 1
@@ -1102,16 +1171,23 @@ def main():
 
                             # Check BEFORE taking screenshot — stop if no more pages
                             if _terminal_contains_text(driver, "PAGING FORWARD INVALID"):
-                                logger.info("PAGING FORWARD INVALID detected - stopping paging for this row")
-                                status_cell.value = "Completed"
-                                workbook.save(excel_path)
-                                logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
-                                break
+                                raise RuntimeError(f"'PAGING FORWARD INVALID' detected for row '{col_a_value}' — closing and restarting")
 
                             screenshot_name_paged = f"{col_a_value}_{datetime.now().strftime('%Y%m%d')}-{page_num}.png"
                             screenshot_path_paged = os.path.join(screenshots_dir, screenshot_name_paged)
 
                             png_bytes_paged = driver.get_screenshot_as_png()
+                            new_page_hash = hashlib.md5(png_bytes_paged).hexdigest()
+                            if new_page_hash == last_page_hash:
+                                logger.info("Duplicate page detected after F8 — stopping paging for this row")
+                                status_cell.value = "Completed"
+                                try:
+                                    workbook.save(excel_path)
+                                    logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
+                                except Exception as save_exc:
+                                    logger.warning(f"Could not save Completed status for row '{col_a_value}' (close Excel and retry): {save_exc}")
+                                break
+                            last_page_hash = new_page_hash
                             img_paged = Image.open(io.BytesIO(png_bytes_paged)).convert("RGB")
                             width_p, height_p = img_paged.size
                             pixels_p = img_paged.load()
@@ -1133,6 +1209,11 @@ def main():
                             cropped_paged.save(screenshot_path_paged)
                             logger.info(f"Paged screenshot saved: {screenshot_path_paged}")
                             del png_bytes_paged, img_paged, cropped_paged
+
+                            # Stop paging if terminal says to inquire before paging forward
+                            if _terminal_contains_text(driver, "PLEASE INQUIRE BEFORE PAGING FORWARD"):
+                                raise RuntimeError(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' after page {page_num} for row '{col_a_value}' — closing and restarting")
+
                             page_num += 1
                         except InvalidSessionIdException:
                             logger.warning(f"Browser session lost during F8 paging at page {page_num} - stopping paging for row '{col_a_value}'")
@@ -1143,6 +1224,8 @@ def main():
                 except InvalidSessionIdException:
                     logger.error(f"Browser session lost while processing row '{col_a_value}' - stopping all remaining rows")
                     raise  # Browser is dead; cannot continue with more rows
+                except RuntimeError:
+                    raise  # Fatal terminal errors (e.g. PLEASE INQUIRE BEFORE PAGING FORWARD) — stop run and trigger retry
                 except Exception as row_exc:
                     logger.error(f"Error processing row '{col_a_value}': {row_exc}", exc_info=True)
                     # Continue to next row for non-fatal errors
@@ -1167,10 +1250,7 @@ def main():
         except Exception as ocr_exc:
             logger.error(f"OCR extraction failed: {ocr_exc}", exc_info=True)
 
-        logger.info(
-            "Automation completed successfully"
-        )
-
+        logger.info("Automation completed successfully")
         messagebox.showinfo("Automation Complete", "Automation Completed.")
 
         # =====================================================
@@ -1186,6 +1266,25 @@ def main():
             f"Automation failed: {str(e)}",
             exc_info=True
         )
+        logger.info(f"See log file for details: {_log_path}")
+
+        # Close the browser before retrying
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            driver = None
+
+        # Retry if there are uncompleted rows and attempts remain
+        if _has_uncompleted_rows(excel_path, "Sheet1") and _attempt < _max_retries:
+            logger.info(f"Restarting automation in 3 seconds (attempt {_attempt + 1}/{_max_retries})...")
+            time.sleep(3)
+            main(_excel_path=excel_path, _attempt=_attempt + 1, _max_retries=_max_retries)
+        else:
+            if _attempt >= _max_retries:
+                logger.error(f"Maximum retries ({_max_retries}) reached.")
+            input("\nAutomation failed. Press Enter to close...")
 
     finally:
 

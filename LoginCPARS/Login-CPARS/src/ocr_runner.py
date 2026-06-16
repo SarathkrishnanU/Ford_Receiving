@@ -10,7 +10,80 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\skrishnan1\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+_TESSERACT_CANDIDATES = [
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Tesseract-OCR", "tesseract.exe"),
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+]
+
+_TESSERACT_DOWNLOAD_URL = (
+    "https://github.com/UB-Mannheim/tesseract/releases/download/"
+    "v5.5.0.20241111/tesseract-ocr-w64-setup-5.5.0.20241111.exe"
+)
+
+
+def _ensure_tesseract():
+    """Return path to tesseract.exe, auto-downloading and installing it silently if not found."""
+    found = next((p for p in _TESSERACT_CANDIDATES if os.path.isfile(p)), None)
+    if found:
+        logger.info(f"Tesseract found at: {found}")
+        return found
+
+    # Not installed — inform user and download silently
+    import urllib.request
+    import tempfile
+    import subprocess
+    import tkinter as tk
+    from tkinter import messagebox
+
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showinfo(
+        "Installing Tesseract OCR",
+        "Tesseract OCR was not found on this machine.\n\n"
+        "It will now be downloaded and installed automatically.\n"
+        "This may take a minute — please wait."
+    )
+    root.destroy()
+
+    install_dir = os.path.join(os.environ.get("LOCALAPPDATA", r"C:\"), "Programs", "Tesseract-OCR")
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as tmp:
+            tmp_path = tmp.name
+        logger.info(f"Downloading Tesseract from: {_TESSERACT_DOWNLOAD_URL}")
+        urllib.request.urlretrieve(_TESSERACT_DOWNLOAD_URL, tmp_path)
+        logger.info("Download complete. Running silent install...")
+        subprocess.run(
+            [tmp_path, "/S", f"/D={install_dir}"],
+            check=True,
+            timeout=180
+        )
+        logger.info("Tesseract installation complete.")
+    except Exception as exc:
+        logger.error(f"Failed to auto-install Tesseract: {exc}")
+        root2 = tk.Tk()
+        root2.withdraw()
+        messagebox.showerror(
+            "Tesseract Install Failed",
+            f"Could not automatically install Tesseract OCR.\n\n"
+            f"Please install it manually from:\nhttps://github.com/UB-Mannheim/tesseract/wiki\n\nError: {exc}"
+        )
+        root2.destroy()
+        return None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+    found = next((p for p in _TESSERACT_CANDIDATES if os.path.isfile(p)), None)
+    if found:
+        logger.info(f"Tesseract installed successfully at: {found}")
+    else:
+        logger.warning("Tesseract install finished but tesseract.exe not found in expected locations.")
+    return found
 
 FOLDER_PATH = r"C:\Users\skrishnan1\Videos\Ford Project Test"
 
@@ -70,6 +143,10 @@ receipt_pattern = re.compile(
 
 def run_ocr(folder_path=FOLDER_PATH):
     """Run OCR extraction on all images in folder_path and save results to OCR_Extracted.xlsx."""
+    tesseract_path = _ensure_tesseract()
+    if tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
+
     rows = []
 
     image_files = [f for f in os.listdir(folder_path) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
@@ -119,7 +196,7 @@ def run_ocr(folder_path=FOLDER_PATH):
     with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Sheet1')
 
-        summary_df = df.groupby(['File Name', 'DIV', 'PLT', 'DOC NO', 'ITEM', 'Order Qty'], as_index=False).agg({
+        summary_df = df.groupby(['DIV', 'PLT', 'DOC NO', 'ITEM', 'Order Qty'], as_index=False).agg({
             'Qty/Recd': lambda x: pd.to_numeric(x, errors='coerce').sum()
         })
         summary_df['Qty/Recd'] = summary_df['Qty/Recd'].astype('Int64')
