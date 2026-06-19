@@ -30,7 +30,10 @@ from src.terminal_utils import send_terminal_text, press_terminal_enter
 from src.excel_utils import paste_excel_values_to_terminal
 
 from dotenv import load_dotenv
-load_dotenv()
+
+# Determine app directory next to the exe (or script during development)
+_app_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_app_dir, '.env'))
 
 PORTAL_USERNAME   = os.environ.get("PORTAL_USERNAME", "")
 PORTAL_PASSWORD   = os.environ.get("PORTAL_PASSWORD", "")
@@ -42,9 +45,6 @@ CPARS_URL         = os.environ.get("CPARS_URL", "https://fsp.portal.covisint.com
 # =========================================================
 # LOGGING
 # =========================================================
-
-# Determine log file path next to the exe (or script during development)
-_app_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 _log_path = os.path.join(_app_dir, 'LoginCPARS.log')
 
 logging.basicConfig(
@@ -595,9 +595,11 @@ def _has_uncompleted_rows(excel_path, sheet_name="Sheet1"):
         wb = openpyxl.load_workbook(excel_path)
         sheet = wb[sheet_name]
         for row in sheet.iter_rows(min_row=2):
-            if row[0].value is not None and row[6].value != "Completed":
-                logger.info(f"Uncompleted row found: {row[0].value}")
-                return True
+            if row[0].value is not None:
+                status = row[6].value if len(row) > 6 else None
+                if status != "Completed":
+                    logger.info(f"Uncompleted row found: {row[0].value}")
+                    return True
         logger.info("All rows in Excel are marked Completed.")
         return False
     except Exception as e:
@@ -609,8 +611,10 @@ def _has_uncompleted_rows(excel_path, sheet_name="Sheet1"):
 # MAIN
 # =========================================================
 
-def main(_excel_path=None, _attempt=1, _max_retries=10):
+def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=10):
     global driver
+
+    logger.info(f"main() called — attempt {_attempt}, excel={_excel_path}, output_dir={_output_dir}")
 
     if _attempt > 1:
         logger.info(f"--- Retry attempt {_attempt}/{_max_retries} ---")
@@ -621,7 +625,7 @@ def main(_excel_path=None, _attempt=1, _max_retries=10):
 
     if _excel_path is None:
         root = tk.Tk()
-        root.withdraw()  # Hide the root window
+        root.withdraw()
         root.attributes("-topmost", True)
 
         _excel_path = filedialog.askopenfilename(
@@ -630,11 +634,25 @@ def main(_excel_path=None, _attempt=1, _max_retries=10):
             initialdir=r"C:\Users\skrishnan1\Videos\Proj\LoginCPARS\Login-CPARS\Input"
         )
 
-        root.destroy()
-
         if not _excel_path:
-            messagebox.showerror("No File Selected", "No Excel file was selected. Exiting.")
+            messagebox.showerror("No File Selected", "No Excel file was selected. Exiting.", parent=root)
+            root.destroy()
             return
+
+        logger.info(f"Excel file selected: {_excel_path}")
+
+        _output_dir = filedialog.askdirectory(
+            title="Select Output Folder for Screenshots",
+            initialdir=os.path.dirname(_excel_path)
+        )
+
+        if not _output_dir:
+            messagebox.showerror("No Folder Selected", "No output folder was selected. Exiting.", parent=root)
+            root.destroy()
+            return
+
+        logger.info(f"Output folder selected: {_output_dir}")
+        root.destroy()
 
     excel_path = _excel_path
     logger.info(f"Excel input file: {excel_path}")
@@ -1071,7 +1089,7 @@ def main(_excel_path=None, _attempt=1, _max_retries=10):
         # === PASTE EXCEL DATA INTO TERMINAL (D, E, F columns) ===
         sheet_name = "Sheet1"  # Update this sheet name if needed
         from datetime import datetime
-        screenshots_dir = r"C:\Users\skrishnan1\Videos\Ford Project Test"
+        screenshots_dir = _output_dir
         os.makedirs(screenshots_dir, exist_ok=True)
         try:
             workbook = openpyxl.load_workbook(excel_path)
@@ -1121,9 +1139,25 @@ def main(_excel_path=None, _attempt=1, _max_retries=10):
                     if _terminal_contains_text(driver, "PLEASE INQUIRE BEFORE PAGING FORWARD"):
                         raise RuntimeError(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' on initial page for row '{col_a_value}' — closing and restarting")
 
+                    if _terminal_contains_text(driver, "INVALID COMMAND"):
+                        raise RuntimeError(f"'INVALID COMMAND' displayed in terminal for row '{col_a_value}' — closing and restarting")
+
                     logger.info(f"'DOCUMENT NOT ON FILE' not detected — proceeding with screenshot for row '{col_a_value}'")
 
                     # Take screenshot named after Column A value
+                    screenshot_taken = False
+
+                    # Validate correct screen is shown before taking screenshot
+                    if not (_terminal_contains_text(driver, "CCAPS Payment Approval / Receipt History") or
+                            _terminal_contains_text(driver, "CPARS Receipt History")):
+                        raise RuntimeError(
+                            f"Expected screen not found for row '{col_a_value}' — "
+                            f"neither 'CCAPS Payment Approval / Receipt History' nor 'CPARS Receipt History' "
+                            f"is visible in terminal — closing and restarting"
+                        )
+
+                    logger.info(f"Screen validated — proceeding with screenshot for row '{col_a_value}'")
+
                     screenshot_name = f"{col_a_value}_{datetime.now().strftime('%Y%m%d')}.png"
                     screenshot_path = os.path.join(screenshots_dir, screenshot_name)
 
@@ -1156,6 +1190,7 @@ def main(_excel_path=None, _attempt=1, _max_retries=10):
                         cropped = img
 
                     cropped.save(screenshot_path)
+                    screenshot_taken = True
                     logger.info(f"Screenshot saved: {screenshot_path}")
                     del png_bytes, img, cropped
                     rows_processed += 1
@@ -1171,7 +1206,19 @@ def main(_excel_path=None, _attempt=1, _max_retries=10):
 
                             # Check BEFORE taking screenshot — stop if no more pages
                             if _terminal_contains_text(driver, "PAGING FORWARD INVALID"):
-                                raise RuntimeError(f"'PAGING FORWARD INVALID' detected for row '{col_a_value}' — closing and restarting")
+                                logger.info(f"'PAGING FORWARD INVALID' — no more pages for row '{col_a_value}', marking Completed")
+                                if status_cell.value != "Completed":
+                                    status_cell.value = "Completed"
+                                    try:
+                                        workbook.save(excel_path)
+                                        logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
+                                    except Exception as save_exc:
+                                        logger.warning(f"Could not save Completed status for row '{col_a_value}': {save_exc}")
+                                break
+
+                            # Stop paging if terminal says to inquire before paging forward
+                            if _terminal_contains_text(driver, "PLEASE INQUIRE BEFORE PAGING FORWARD"):
+                                raise RuntimeError(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' after page {page_num} for row '{col_a_value}' — closing and restarting")
 
                             screenshot_name_paged = f"{col_a_value}_{datetime.now().strftime('%Y%m%d')}-{page_num}.png"
                             screenshot_path_paged = os.path.join(screenshots_dir, screenshot_name_paged)
@@ -1210,10 +1257,6 @@ def main(_excel_path=None, _attempt=1, _max_retries=10):
                             logger.info(f"Paged screenshot saved: {screenshot_path_paged}")
                             del png_bytes_paged, img_paged, cropped_paged
 
-                            # Stop paging if terminal says to inquire before paging forward
-                            if _terminal_contains_text(driver, "PLEASE INQUIRE BEFORE PAGING FORWARD"):
-                                raise RuntimeError(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' after page {page_num} for row '{col_a_value}' — closing and restarting")
-
                             page_num += 1
                         except InvalidSessionIdException:
                             logger.warning(f"Browser session lost during F8 paging at page {page_num} - stopping paging for row '{col_a_value}'")
@@ -1223,9 +1266,23 @@ def main(_excel_path=None, _attempt=1, _max_retries=10):
 
                 except InvalidSessionIdException:
                     logger.error(f"Browser session lost while processing row '{col_a_value}' - stopping all remaining rows")
+                    if screenshot_taken and status_cell.value != "Completed":
+                        status_cell.value = "Completed"
+                        try:
+                            workbook.save(excel_path)
+                            logger.info(f"Row '{col_a_value}' marked as Completed before stopping (screenshot was taken)")
+                        except Exception as save_exc:
+                            logger.warning(f"Could not save Completed status for row '{col_a_value}': {save_exc}")
                     raise  # Browser is dead; cannot continue with more rows
                 except RuntimeError:
-                    raise  # Fatal terminal errors (e.g. PLEASE INQUIRE BEFORE PAGING FORWARD) — stop run and trigger retry
+                    if screenshot_taken and status_cell.value != "Completed":
+                        status_cell.value = "Completed"
+                        try:
+                            workbook.save(excel_path)
+                            logger.info(f"Row '{col_a_value}' marked as Completed before stopping (screenshot was taken)")
+                        except Exception as save_exc:
+                            logger.warning(f"Could not save Completed status for row '{col_a_value}': {save_exc}")
+                    raise  # Fatal terminal errors — stop run and trigger retry
                 except Exception as row_exc:
                     logger.error(f"Error processing row '{col_a_value}': {row_exc}", exc_info=True)
                     # Continue to next row for non-fatal errors
@@ -1245,7 +1302,7 @@ def main(_excel_path=None, _attempt=1, _max_retries=10):
         from src.ocr_runner import run_ocr
         logger.info("Running OCR extraction")
         try:
-            run_ocr()
+            run_ocr(_output_dir)
             logger.info("OCR extraction completed successfully")
         except Exception as ocr_exc:
             logger.error(f"OCR extraction failed: {ocr_exc}", exc_info=True)
@@ -1280,7 +1337,7 @@ def main(_excel_path=None, _attempt=1, _max_retries=10):
         if _has_uncompleted_rows(excel_path, "Sheet1") and _attempt < _max_retries:
             logger.info(f"Restarting automation in 3 seconds (attempt {_attempt + 1}/{_max_retries})...")
             time.sleep(3)
-            main(_excel_path=excel_path, _attempt=_attempt + 1, _max_retries=_max_retries)
+            main(_excel_path=excel_path, _output_dir=_output_dir, _attempt=_attempt + 1, _max_retries=_max_retries)
         else:
             if _attempt >= _max_retries:
                 logger.error(f"Maximum retries ({_max_retries}) reached.")

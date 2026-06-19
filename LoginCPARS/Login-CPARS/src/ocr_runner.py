@@ -46,7 +46,7 @@ def _ensure_tesseract():
     )
     root.destroy()
 
-    install_dir = os.path.join(os.environ.get("LOCALAPPDATA", r"C:\"), "Programs", "Tesseract-OCR")
+    install_dir = os.path.join(os.environ.get("LOCALAPPDATA", "C:\\"), "Programs", "Tesseract-OCR")
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as tmp:
