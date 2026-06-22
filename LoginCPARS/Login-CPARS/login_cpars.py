@@ -33,7 +33,7 @@ from dotenv import load_dotenv
 
 # Determine app directory next to the exe (or script during development)
 _app_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(_app_dir, '.env'))
+load_dotenv(os.path.join(_app_dir, '.env'), override=True)
 
 PORTAL_USERNAME   = os.environ.get("PORTAL_USERNAME", "")
 PORTAL_PASSWORD   = os.environ.get("PORTAL_PASSWORD", "")
@@ -61,6 +61,10 @@ logger = logging.getLogger(__name__)
 
 # The terminal is often inside one specific frame. Once found, reuse it.
 TERMINAL_CONTEXT_INDEX = None
+
+# Retry state — set by main() instead of calling itself recursively.
+# Handled by the while loop in __main__ so only one browser is ever open.
+_pending_retry_state: dict = {}
 
 
 # =========================================================
@@ -611,7 +615,7 @@ def _has_uncompleted_rows(excel_path, sheet_name="Sheet1"):
 # MAIN
 # =========================================================
 
-def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=10):
+def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
     global driver
 
     logger.info(f"main() called — attempt {_attempt}, excel={_excel_path}, output_dir={_output_dir}")
@@ -1166,7 +1170,6 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=10):
                     import io
                     import hashlib
                     png_bytes = driver.get_screenshot_as_png()
-                    last_page_hash = hashlib.md5(png_bytes).hexdigest()
                     img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
                     width, height = img.size
 
@@ -1192,7 +1195,12 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=10):
                     cropped.save(screenshot_path)
                     screenshot_taken = True
                     logger.info(f"Screenshot saved: {screenshot_path}")
-                    del png_bytes, img, cropped
+                    # Hash the CROPPED terminal area so duplicate detection is not
+                    # affected by browser-chrome changes (URL bar, tab title, etc.)
+                    _crop_buf = io.BytesIO()
+                    cropped.save(_crop_buf, format='PNG')
+                    last_page_hash = hashlib.md5(_crop_buf.getvalue()).hexdigest()
+                    del _crop_buf, png_bytes, img, cropped
                     rows_processed += 1
 
                     # Press F8 to page forward and capture additional pages
@@ -1224,17 +1232,6 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=10):
                             screenshot_path_paged = os.path.join(screenshots_dir, screenshot_name_paged)
 
                             png_bytes_paged = driver.get_screenshot_as_png()
-                            new_page_hash = hashlib.md5(png_bytes_paged).hexdigest()
-                            if new_page_hash == last_page_hash:
-                                logger.info("Duplicate page detected after F8 — stopping paging for this row")
-                                status_cell.value = "Completed"
-                                try:
-                                    workbook.save(excel_path)
-                                    logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
-                                except Exception as save_exc:
-                                    logger.warning(f"Could not save Completed status for row '{col_a_value}' (close Excel and retry): {save_exc}")
-                                break
-                            last_page_hash = new_page_hash
                             img_paged = Image.open(io.BytesIO(png_bytes_paged)).convert("RGB")
                             width_p, height_p = img_paged.size
                             pixels_p = img_paged.load()
@@ -1253,6 +1250,23 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=10):
                             else:
                                 cropped_paged = img_paged
 
+                            # Hash the CROPPED terminal area for accurate duplicate detection
+                            _crop_buf_p = io.BytesIO()
+                            cropped_paged.save(_crop_buf_p, format='PNG')
+                            new_page_hash = hashlib.md5(_crop_buf_p.getvalue()).hexdigest()
+                            del _crop_buf_p
+
+                            if new_page_hash == last_page_hash:
+                                logger.info("Duplicate page detected after F8 — stopping paging for this row")
+                                status_cell.value = "Completed"
+                                try:
+                                    workbook.save(excel_path)
+                                    logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
+                                except Exception as save_exc:
+                                    logger.warning(f"Could not save Completed status for row '{col_a_value}' (close Excel and retry): {save_exc}")
+                                del png_bytes_paged, img_paged, cropped_paged
+                                break
+                            last_page_hash = new_page_hash
                             cropped_paged.save(screenshot_path_paged)
                             logger.info(f"Paged screenshot saved: {screenshot_path_paged}")
                             del png_bytes_paged, img_paged, cropped_paged
@@ -1337,7 +1351,13 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=10):
         if _has_uncompleted_rows(excel_path, "Sheet1") and _attempt < _max_retries:
             logger.info(f"Restarting automation in 3 seconds (attempt {_attempt + 1}/{_max_retries})...")
             time.sleep(3)
-            main(_excel_path=excel_path, _output_dir=_output_dir, _attempt=_attempt + 1, _max_retries=_max_retries)
+            # Schedule retry via module-level state — the while loop in __main__
+            # will call main() again so this call returns cleanly (no recursion).
+            _pending_retry_state['retry'] = True
+            _pending_retry_state['excel_path'] = excel_path
+            _pending_retry_state['output_dir'] = _output_dir
+            _pending_retry_state['attempt'] = _attempt + 1
+            _pending_retry_state['max_retries'] = _max_retries
         else:
             if _attempt >= _max_retries:
                 logger.error(f"Maximum retries ({_max_retries}) reached.")
@@ -1351,4 +1371,23 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=10):
 
 if __name__ == "__main__":
 
-    main()
+    _excel_path_arg = None
+    _output_dir_arg = None
+    _attempt_arg = 1
+    _max_retries_arg = 25
+
+    while True:
+        _pending_retry_state.clear()
+        main(
+            _excel_path=_excel_path_arg,
+            _output_dir=_output_dir_arg,
+            _attempt=_attempt_arg,
+            _max_retries=_max_retries_arg,
+        )
+        if _pending_retry_state.get('retry'):
+            _excel_path_arg = _pending_retry_state['excel_path']
+            _output_dir_arg = _pending_retry_state['output_dir']
+            _attempt_arg = _pending_retry_state['attempt']
+            _max_retries_arg = _pending_retry_state['max_retries']
+        else:
+            break
