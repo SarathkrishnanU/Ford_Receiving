@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import shutil
 import pandas as pd
 from PIL import Image, ImageEnhance
 import pytesseract
@@ -25,12 +26,14 @@ _TESSERACT_DOWNLOAD_URL = (
 def _ensure_tesseract():
     """Return path to tesseract.exe, auto-downloading and installing it silently if not found."""
     found = next((p for p in _TESSERACT_CANDIDATES if os.path.isfile(p)), None)
+    if not found:
+        # Also check if tesseract is available on PATH
+        found = shutil.which('tesseract')
     if found:
         logger.info(f"Tesseract found at: {found}")
         return found
 
     # Not installed — inform user and download silently
-    import urllib.request
     import tempfile
     import subprocess
     import tkinter as tk
@@ -49,10 +52,16 @@ def _ensure_tesseract():
     install_dir = os.path.join(os.environ.get("LOCALAPPDATA", "C:\\"), "Programs", "Tesseract-OCR")
     tmp_path = None
     try:
+        import requests as _requests
         with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as tmp:
             tmp_path = tmp.name
         logger.info(f"Downloading Tesseract from: {_TESSERACT_DOWNLOAD_URL}")
-        urllib.request.urlretrieve(_TESSERACT_DOWNLOAD_URL, tmp_path)
+        response = _requests.get(_TESSERACT_DOWNLOAD_URL, stream=True, timeout=120)
+        response.raise_for_status()
+        with open(tmp_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=65536):
+                if chunk:
+                    f.write(chunk)
         logger.info("Download complete. Running silent install...")
         subprocess.run(
             [tmp_path, "/S", f"/D={install_dir}"],

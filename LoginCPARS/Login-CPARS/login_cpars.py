@@ -1107,6 +1107,25 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                 if status_cell.value == "Completed":
                     logger.info(f"Skipping row '{col_a_value}' — already Completed")
                     continue
+                # Secondary guard: if a screenshot file already exists for this row
+                # (e.g. Excel status was not saved due to a locked file on a previous run),
+                # mark Completed now and skip to avoid creating a duplicate.
+                existing_screenshots = [
+                    f for f in os.listdir(screenshots_dir)
+                    if f.startswith(col_a_value + "_") and f.lower().endswith(".png")
+                ]
+                if existing_screenshots:
+                    logger.info(
+                        f"Screenshot(s) already exist for '{col_a_value}' "
+                        f"({existing_screenshots}) — marking Completed and skipping"
+                    )
+                    status_cell.value = "Completed"
+                    try:
+                        workbook.save(excel_path)
+                        logger.info(f"Row '{col_a_value}' marked as Completed in Excel (screenshot existed)")
+                    except Exception as save_exc:
+                        logger.warning(f"Could not save Completed status for '{col_a_value}': {save_exc}")
+                    continue
                 values = (row[3].value, row[4].value, row[5].value)  # Columns D, E, F
                 try:
                     # Position cursor: BACKTAB×2 for the first row being processed this run,
@@ -1195,12 +1214,10 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                     cropped.save(screenshot_path)
                     screenshot_taken = True
                     logger.info(f"Screenshot saved: {screenshot_path}")
-                    # Hash the CROPPED terminal area so duplicate detection is not
-                    # affected by browser-chrome changes (URL bar, tab title, etc.)
-                    _crop_buf = io.BytesIO()
-                    cropped.save(_crop_buf, format='PNG')
-                    last_page_hash = hashlib.md5(_crop_buf.getvalue()).hexdigest()
-                    del _crop_buf, png_bytes, img, cropped
+                    # Hash raw pixel bytes — PNG compression is non-deterministic
+                    # so hashing PNG bytes can differ for identical pixel content.
+                    last_page_hash = hashlib.md5(cropped.tobytes()).hexdigest()
+                    del png_bytes, img, cropped
                     rows_processed += 1
 
                     # Press F8 to page forward and capture additional pages
@@ -1250,11 +1267,8 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                             else:
                                 cropped_paged = img_paged
 
-                            # Hash the CROPPED terminal area for accurate duplicate detection
-                            _crop_buf_p = io.BytesIO()
-                            cropped_paged.save(_crop_buf_p, format='PNG')
-                            new_page_hash = hashlib.md5(_crop_buf_p.getvalue()).hexdigest()
-                            del _crop_buf_p
+                            # Hash raw pixel bytes for reliable duplicate detection
+                            new_page_hash = hashlib.md5(cropped_paged.tobytes()).hexdigest()
 
                             if new_page_hash == last_page_hash:
                                 logger.info("Duplicate page detected after F8 — stopping paging for this row")
@@ -1271,10 +1285,40 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                             logger.info(f"Paged screenshot saved: {screenshot_path_paged}")
                             del png_bytes_paged, img_paged, cropped_paged
 
+                            # Post-save safety: DOM sometimes lags behind the visual render,
+                            # so "PAGING FORWARD INVALID" may only appear in page_source AFTER
+                            # the screenshot was already taken. Delete the spurious file here.
+                            if _terminal_contains_text(driver, "PAGING FORWARD INVALID"):
+                                logger.info(f"'PAGING FORWARD INVALID' detected after saving page {page_num} — removing spurious screenshot")
+                                try:
+                                    os.remove(screenshot_path_paged)
+                                    logger.info(f"Removed spurious screenshot: {screenshot_path_paged}")
+                                except Exception as del_exc:
+                                    logger.warning(f"Could not delete spurious screenshot: {del_exc}")
+                                status_cell.value = "Completed"
+                                try:
+                                    workbook.save(excel_path)
+                                    logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
+                                except Exception as save_exc:
+                                    logger.warning(f"Could not save Completed status: {save_exc}")
+                                break
+
                             page_num += 1
                         except InvalidSessionIdException:
                             logger.warning(f"Browser session lost during F8 paging at page {page_num} - stopping paging for row '{col_a_value}'")
                             raise
+
+                    # Guarantee the row is marked Completed after the paging loop
+                    # regardless of which break path was taken (including the
+                    # "send_terminal_text F8 returned False" path which previously
+                    # exited without saving the status, causing duplicates on restart).
+                    if screenshot_taken and status_cell.value != "Completed":
+                        status_cell.value = "Completed"
+                        try:
+                            workbook.save(excel_path)
+                            logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
+                        except Exception as save_exc:
+                            logger.warning(f"Could not save Completed status for row '{col_a_value}': {save_exc}")
 
                     logger.info(f"Row '{col_a_value}' completed successfully.")
 
@@ -1358,6 +1402,17 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
             _pending_retry_state['output_dir'] = _output_dir
             _pending_retry_state['attempt'] = _attempt + 1
             _pending_retry_state['max_retries'] = _max_retries
+        elif not _has_uncompleted_rows(excel_path, "Sheet1"):
+            # All rows completed — the error was on the last row but everything is done.
+            # Run OCR and show success instead of the failure message.
+            logger.info("All rows are Completed — running OCR and showing success.")
+            try:
+                from src.ocr_runner import run_ocr
+                run_ocr(_output_dir)
+                logger.info("OCR extraction completed successfully")
+            except Exception as ocr_exc:
+                logger.error(f"OCR extraction failed: {ocr_exc}", exc_info=True)
+            messagebox.showinfo("Automation Complete", "Automation Completed.")
         else:
             if _attempt >= _max_retries:
                 logger.error(f"Maximum retries ({_max_retries}) reached.")
