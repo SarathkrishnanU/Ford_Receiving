@@ -1214,6 +1214,18 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                     cropped.save(screenshot_path)
                     screenshot_taken = True
                     logger.info(f"Screenshot saved: {screenshot_path}")
+                    # Post-save safety: message can appear after the pre-save check due to
+                    # rendering lag — delete the file and restart if found.
+                    if _terminal_contains_text(driver, "PLEASE INQUIRE BEFORE PAGING FORWARD"):
+                        logger.info(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' detected after saving initial screenshot for '{col_a_value}' — removing")
+                        try:
+                            os.remove(screenshot_path)
+                            logger.info(f"Removed screenshot: {screenshot_path}")
+                        except Exception as del_exc:
+                            logger.warning(f"Could not delete screenshot: {del_exc}")
+                        screenshot_taken = False
+                        del png_bytes, img, cropped
+                        raise RuntimeError(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' on initial page for row '{col_a_value}' — closing and restarting")
                     # Hash raw pixel bytes — PNG compression is non-deterministic
                     # so hashing PNG bytes can differ for identical pixel content.
                     last_page_hash = hashlib.md5(cropped.tobytes()).hexdigest()
@@ -1302,6 +1314,17 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                                 except Exception as save_exc:
                                     logger.warning(f"Could not save Completed status: {save_exc}")
                                 break
+
+                            # Post-save safety: same rendering-lag issue for PLEASE INQUIRE —
+                            # delete the spurious paged file and restart.
+                            if _terminal_contains_text(driver, "PLEASE INQUIRE BEFORE PAGING FORWARD"):
+                                logger.info(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' detected after saving page {page_num} for '{col_a_value}' — removing")
+                                try:
+                                    os.remove(screenshot_path_paged)
+                                    logger.info(f"Removed spurious screenshot: {screenshot_path_paged}")
+                                except Exception as del_exc:
+                                    logger.warning(f"Could not delete spurious screenshot: {del_exc}")
+                                raise RuntimeError(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' after page {page_num} for row '{col_a_value}' — closing and restarting")
 
                             page_num += 1
                         except InvalidSessionIdException:
