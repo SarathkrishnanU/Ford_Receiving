@@ -101,19 +101,24 @@ def correct_ocr_errors(text):
     
     # 7. Fix line/sequence numbers that appear wrong
     text = re.sub(r'(LINE:\s*)([68])(\s)', r'\g<1>0\g<3>', text, flags=re.IGNORECASE)  # LINE: 8 -> LINE: 0
-    
+
+    # 8. Fix dates with 3-digit middle part (OCR error: 05/260/26 -> 05/20/26)
+    text = re.sub(r'(\d{1,2})/(\d{3})/(\d{2})', lambda m: f"{m.group(1)}/{m.group(2)[0]}{m.group(2)[2]}/{m.group(3)}", text)
+
     return text
 
 # Receipt pattern - captures multi-line format where Qty/Recd is on the next line
 # More flexible to handle variations in invoice numbers and packing slips
 receipt_pattern = re.compile(
-    r'S\s+(MC\d+\S*)\s+(.+?)(\d{1,2}/\d{1,2}/\d{2})\s+(\d{1,2}/\d{1,2}/\d{2})\s+USD\s*(\S*?).*?\n\s*(\d*)\s*([-\d]+)',
+    r'S\s+(MC\d+\S*)\s+(.+?)(\d{1,2}/\d{1,3}/\d{2})\s+(\d{1,2}/\d{1,3}/\d{2})\s+USD\s*(\S+).*?\n\s*(\d*)\s*([-\d]+)',
     re.MULTILINE | re.IGNORECASE | re.DOTALL
 )
 
-for file_name in os.listdir(folder_path):
-    if not file_name.lower().endswith((".png", ".jpg", ".jpeg")):
-        continue
+image_files = [f for f in os.listdir(folder_path) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
+print(f"Found {len(image_files)} image(s) in folder: {folder_path}")
+
+for file_name in image_files:
+    print(f"\nProcessing: {file_name}")
 
     # Preprocess image
     preprocessed_img = preprocess_image(os.path.join(folder_path, file_name))
@@ -140,6 +145,11 @@ for file_name in os.listdir(folder_path):
 
     # Extract receipt rows
     matches = receipt_pattern.findall(text)
+    print(f"  -> {len(matches)} match(es) found")
+    if len(matches) == 0:
+        print("  -- RAW OCR TEXT --")
+        print(text[:2000])
+        print("  -- END RAW TEXT --")
 
     for match in matches:
         mc_num, status_info, rec_dt, ship_dt, invoice_num, packing_slip, qty_recd = match

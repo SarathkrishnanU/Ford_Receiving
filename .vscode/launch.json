@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run OCR",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/OCR.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false
+        },
+        {
+            "name": "Login CPARS",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/LoginCPARS/Login-CPARS/login_cpars.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/LoginCPARS/Login-CPARS",
+            "justMyCode": false
+        }
+    ]
+}

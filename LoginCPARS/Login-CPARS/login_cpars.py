@@ -21,10 +21,10 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.edge.service import Service
+from selenium.webdriver.edge.options import Options
 
-from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.microsoft import EdgeChromiumDriverManager
 from selenium.common.exceptions import InvalidSessionIdException, WebDriverException
 from src.terminal_utils import send_terminal_text, press_terminal_enter
 from src.excel_utils import paste_excel_values_to_terminal
@@ -481,6 +481,147 @@ def press_terminal_right_arrow(driver):
     return False
 
 
+def press_terminal_f8(driver):
+    """Send F8 as a function key to the IBM HOD terminal.
+
+    Uses JavaScript keydown dispatch so Edge (and Chrome) route it through
+    HOD's own keyboard handler rather than typing the literal characters 'F8'.
+    Falls back to ActionChains if JavaScript dispatch fails.
+    """
+    def _op(body):
+        # Dispatch on body element — stays within HOD's iframe
+        try:
+            driver.execute_script(
+                "arguments[0].dispatchEvent(new KeyboardEvent('keydown', {"
+                " key:'F8', code:'F8', keyCode:119, which:119,"
+                " bubbles:true, cancelable:true}));",
+                body
+            )
+            return True
+        except Exception as exc:
+            logger.debug(f"F8 JS dispatch failed: {exc}")
+        # Fallback: ActionChains on body
+        try:
+            ActionChains(driver).move_to_element(body).send_keys(Keys.F8).perform()
+            return True
+        except Exception as exc:
+            logger.debug(f"F8 ActionChains failed: {exc}")
+        return False
+
+    if _run_in_terminal_context(driver, _op, "Sending F8"):
+        logger.info("F8 key sent in terminal")
+        return True
+
+    return False
+
+
+def press_terminal_f12(driver):
+    """Send F12 (Return) as a function key to the IBM HOD terminal.
+
+    F12=Return takes the terminal back from the results screen (GRAP557B)
+    to the query screen (GRAP529B).
+
+    IMPORTANT: dispatching F12 at document level causes Edge to open DevTools
+    and crash the session.  We dispatch it on the terminal body element instead
+    so it stays within HOD's iframe and the browser never sees it.
+    """
+    def _op(body):
+        try:
+            # Dispatch on the body element — stays in HOD's iframe, browser won't intercept
+            driver.execute_script(
+                "arguments[0].dispatchEvent(new KeyboardEvent('keydown', {"
+                " key:'F12', code:'F12', keyCode:123, which:123,"
+                " bubbles:true, cancelable:true}));",
+                body
+            )
+            return True
+        except Exception as exc:
+            logger.debug(f"F12 JS dispatch on body failed: {exc}")
+        return False
+
+    if _run_in_terminal_context(driver, _op, "Sending F12"):
+        logger.info("F12 key sent in terminal")
+        return True
+
+    return False
+
+
+def press_terminal_home(driver):
+    """Send the Home key to the IBM HOD terminal.
+
+    In IBM HOD, Home moves the cursor to the first unprotected (input) field
+    on the screen.  On GRAP529B that is the ==> command field; one TAB from
+    there lands on the DIV field — the first data-entry field.
+    """
+    def _op(body):
+        try:
+            driver.execute_script(
+                "arguments[0].dispatchEvent(new KeyboardEvent('keydown', {"
+                " key:'Home', code:'Home', keyCode:36, which:36,"
+                " bubbles:true, cancelable:true}));",
+                body
+            )
+            return True
+        except Exception as exc:
+            logger.debug(f"Home JS dispatch failed: {exc}")
+        try:
+            ActionChains(driver).move_to_element(body).send_keys(Keys.HOME).perform()
+            return True
+        except Exception as exc:
+            logger.debug(f"Home ActionChains failed: {exc}")
+        return False
+
+    if _run_in_terminal_context(driver, _op, "Sending Home"):
+        logger.info("Home key sent in terminal")
+        return True
+
+    return False
+
+
+def click_terminal_div_field(driver):
+    """Click directly on the DIV input field of the CPARS Receipt History screen.
+
+    The HOD terminal is a 3270 screen (80 cols × 24 rows).  The DIV field is
+    at 3270 row 3, column 6 (1-indexed).  Clicking positions the cursor there
+    regardless of where it currently is, giving a fixed starting pixel every time.
+    """
+    def _op(body):
+        try:
+            # Get the rendered body dimensions
+            dims = driver.execute_script(
+                "return [arguments[0].scrollWidth, arguments[0].scrollHeight];",
+                body
+            )
+            body_w, body_h = dims[0], dims[1]
+            if body_w < 100 or body_h < 100:
+                logger.debug(f"Terminal body too small ({body_w}×{body_h}) — skipping DIV click")
+                return False
+
+            # Calculate pixel offset from top-left of body for row 3, col 6 (1-indexed)
+            # Use mid-cell: (col - 0.5) / 80  and  (row - 0.5) / 24
+            x = int((5.5 / 80) * body_w)   # column 6, 0-indexed 5 → mid = 5.5
+            y = int((2.5 / 24) * body_h)   # row 3, 0-indexed 2 → mid = 2.5
+
+            # ActionChains move_to_element_with_offset uses offset from element CENTER
+            driver.execute_script(
+                "var r = arguments[0].getBoundingClientRect();"
+                "var evt = new MouseEvent('click', {bubbles:true, cancelable:true,"
+                " clientX: r.left + arguments[1], clientY: r.top + arguments[2]});"
+                "arguments[0].dispatchEvent(evt);",
+                body, x, y
+            )
+            logger.info(f"Clicked terminal at DIV field: body {body_w}×{body_h}, offset ({x},{y})")
+            return True
+        except Exception as exc:
+            logger.debug(f"DIV field click failed: {exc}")
+        return False
+
+    if _run_in_terminal_context(driver, _op, "Clicking DIV field"):
+        return True
+
+    return False
+
+
 def send_terminal_credentials(driver, username, password):
 
     # Give the terminal login screen a moment to settle before typing credentials.
@@ -526,6 +667,55 @@ def send_terminal_credentials(driver, username, password):
         raise RuntimeError("Unable to press ENTER after terminal password")
 
     logger.info("Terminal password entered after fallback")
+
+
+def _get_terminal_text(driver):
+    """Return the full visible text content of the terminal screen for debugging."""
+    lines = []
+    try:
+        driver.switch_to.window(driver.window_handles[-1])
+    except Exception:
+        pass
+    try:
+        driver.switch_to.default_content()
+        from selenium.webdriver.common.by import By as _By
+        # Try to get text from pre/div terminal elements
+        for tag in ("pre", "span", "div"):
+            els = driver.find_elements(_By.TAG_NAME, tag)
+            for el in els[:5]:
+                t = el.text.strip()
+                if len(t) > 10:
+                    lines.append(t[:200])
+        if lines:
+            return " | ".join(lines[:3])
+        return driver.page_source[:500]
+    except Exception:
+        pass
+    try:
+        iframes = driver.find_elements(By.TAG_NAME, "iframe")
+        for iframe in iframes[:2]:
+            try:
+                driver.switch_to.default_content()
+                driver.switch_to.frame(iframe)
+                from selenium.webdriver.common.by import By as _By
+                for tag in ("pre", "span"):
+                    els = driver.find_elements(_By.TAG_NAME, tag)
+                    for el in els[:3]:
+                        t = el.text.strip()
+                        if len(t) > 10:
+                            lines.append(t[:200])
+                if lines:
+                    driver.switch_to.default_content()
+                    return " | ".join(lines[:3])
+            except Exception:
+                continue
+    except Exception:
+        pass
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+    return "(could not read terminal text)"
 
 
 def _terminal_contains_text(driver, text):
@@ -623,6 +813,9 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
     if _attempt > 1:
         logger.info(f"--- Retry attempt {_attempt}/{_max_retries} ---")
 
+    # Keep excel_path defined from the start so the except block can always reference it
+    excel_path = _excel_path
+
     # =====================================================
     # BROWSE FOR EXCEL INPUT FILE
     # =====================================================
@@ -658,7 +851,7 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
         logger.info(f"Output folder selected: {_output_dir}")
         root.destroy()
 
-    excel_path = _excel_path
+    excel_path = _excel_path  # may already be set from retry state
     logger.info(f"Excel input file: {excel_path}")
 
     # Check upfront — if all rows are already completed, nothing to do
@@ -669,22 +862,22 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
 
     driver = None
     try:
-        chrome_options = Options()
-        chrome_options.add_argument("--start-maximized")
-        chrome_options.add_argument("--disable-component-update")
-        chrome_options.add_argument("--no-first-run")
-        chrome_options.add_argument("--no-default-browser-check")
-        chrome_options.add_argument("--disable-features=ChromeWhatsNew,BackForwardCache")
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option("useAutomationExtension", False)
+        edge_options = Options()
+        edge_options.add_argument("--start-maximized")
+        edge_options.add_argument("--disable-component-update")
+        edge_options.add_argument("--no-first-run")
+        edge_options.add_argument("--no-default-browser-check")
+        edge_options.add_argument("--disable-features=BackForwardCache")
+        edge_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        edge_options.add_experimental_option("useAutomationExtension", False)
 
-        logger.info("Launching Chrome...")
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=chrome_options
+        logger.info("Launching Edge...")
+        driver = webdriver.Edge(
+            service=Service(EdgeChromiumDriverManager().install()),
+            options=edge_options
         )
         driver.set_page_load_timeout(300)  # 5 minutes for slow portal pages
-        logger.info("Chrome launched successfully")
+        logger.info("Edge launched successfully")
 
         wait = WebDriverWait(driver, 30)
         # =====================================================
@@ -1127,37 +1320,55 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                         logger.warning(f"Could not save Completed status for '{col_a_value}': {save_exc}")
                     continue
                 values = (row[3].value, row[4].value, row[5].value)  # Columns D, E, F
+                screenshot_taken = False  # Must be initialized before try so except block can reference it
                 try:
-                    # Position cursor: BACKTAB×2 for the first row being processed this run,
-                    # DOWN+RIGHT for every subsequent row (regardless of Excel row index).
+                    # Cursor positioning:
+                    #  - Row 0 (first): BACKTAB×2 positions cursor at DIV on the query screen
+                    #    (after initial B+00+ENTER, cursor lands at DOC NO; BACKTAB×2 → DIV).
+                    #  - Rows 1+: end-of-row F12 already returned cursor to GRAP529B at ==>.
+                    #    A single TAB moves forward from ==> to the DIV field.
+                    #    (Do NOT press F12 again here — F12 on GRAP529B goes BACK to GRAP557B.)
                     if rows_processed == 0:
-                        logger.info("Positioning cursor with BACKTAB×2 for first processed row")
+                        logger.info("Positioning cursor with BACKTAB×2 for first row")
                         if not press_terminal_backtab(driver):
-                            raise RuntimeError("Unable to position cursor to first input field (BACKTAB 1)")
+                            raise RuntimeError("Unable to position cursor (BACKTAB 1)")
+                        time.sleep(0.5)
                         if not press_terminal_backtab(driver):
-                            raise RuntimeError("Unable to position cursor to first input field (BACKTAB 2)")
+                            raise RuntimeError("Unable to position cursor (BACKTAB 2)")
+                        time.sleep(0.5)
                     else:
-                        logger.info("Positioning cursor with DOWN+RIGHT for next row")
-                        if not press_terminal_down_arrow(driver):
-                            raise RuntimeError("Unable to send DOWN ARROW to position cursor")
-                        if not press_terminal_right_arrow(driver):
-                            raise RuntimeError("Unable to send RIGHT ARROW to position cursor")
-                    time.sleep(2)
+                        # After F12 returns to GRAP529B the cursor lands inconsistently —
+                        # sometimes at ==> (command field), sometimes already at DIV.
+                        # HOME always moves the cursor to the very first input field (==>),
+                        # then one TAB reliably moves it to DIV regardless of prior state.
+                        logger.info("Pressing HOME then TAB to reliably position cursor at DIV field")
+                        if not press_terminal_home(driver):
+                            raise RuntimeError("Unable to send HOME to reset cursor position")
+                        time.sleep(0.3)
+                        if not press_terminal_tab(driver):
+                            raise RuntimeError("Unable to send TAB to position cursor at DIV field")
+                        time.sleep(0.5)
+
+                    time.sleep(1)
                     for value in values:
                         if value is not None:
                             send_terminal_text(driver, str(value))
                             time.sleep(5)
-                            # Verify the typed value appears in the terminal
+                            # Log visibility (3270 auto-advance moves cursor between sub-fields,
+                            # so text may not be individually findable in page source — that's OK)
                             if _terminal_contains_text(driver, str(value)):
                                 logger.info(f"Verified value '{value}' is visible in terminal")
                             else:
-                                logger.warning(f"Value '{value}' NOT found in terminal after typing - cursor may be in wrong position")
+                                logger.info(f"Value '{value}' typed (auto-advance will move cursor to next sub-field)")
                     press_terminal_enter(driver)
-                    time.sleep(2)  # Wait for terminal to display result
+                    time.sleep(4)  # Wait for terminal to display result after ENTER
 
-                    # Check for error message after ENTER
+                    # Check for error messages after ENTER
                     if _terminal_contains_text(driver, "DOCUMENT NOT ON FILE"):
                         raise RuntimeError(f"'DOCUMENT NOT ON FILE' displayed in terminal for row '{col_a_value}' — stopping run")
+
+                    if _terminal_contains_text(driver, "DOCUMENT NUMBER REQUIRED"):
+                        raise RuntimeError(f"'DOCUMENT NUMBER REQUIRED' displayed in terminal for row '{col_a_value}' — closing and restarting")
 
                     if _terminal_contains_text(driver, "PLEASE INQUIRE BEFORE PAGING FORWARD"):
                         raise RuntimeError(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' on initial page for row '{col_a_value}' — closing and restarting")
@@ -1165,21 +1376,11 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                     if _terminal_contains_text(driver, "INVALID COMMAND"):
                         raise RuntimeError(f"'INVALID COMMAND' displayed in terminal for row '{col_a_value}' — closing and restarting")
 
-                    logger.info(f"'DOCUMENT NOT ON FILE' not detected — proceeding with screenshot for row '{col_a_value}'")
+                    logger.info(f"No error message detected — proceeding with screenshot for row '{col_a_value}'")
 
-                    # Take screenshot named after Column A value
-                    screenshot_taken = False
-
-                    # Validate correct screen is shown before taking screenshot
-                    if not (_terminal_contains_text(driver, "CCAPS Payment Approval / Receipt History") or
-                            _terminal_contains_text(driver, "CPARS Receipt History")):
-                        raise RuntimeError(
-                            f"Expected screen not found for row '{col_a_value}' — "
-                            f"neither 'CCAPS Payment Approval / Receipt History' nor 'CPARS Receipt History' "
-                            f"is visible in terminal — closing and restarting"
-                        )
-
-                    logger.info(f"Screen validated — proceeding with screenshot for row '{col_a_value}'")
+                    # Note: "CCAPS Payment Approval / Receipt History" screen title is rendered via
+                    # canvas in the IBM HOD terminal and is not detectable in page_source.
+                    # We rely on absence of error messages above as confirmation of the correct screen.
 
                     screenshot_name = f"{col_a_value}_{datetime.now().strftime('%Y%m%d')}.png"
                     screenshot_path = os.path.join(screenshots_dir, screenshot_name)
@@ -1226,9 +1427,17 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                         screenshot_taken = False
                         del png_bytes, img, cropped
                         raise RuntimeError(f"'PLEASE INQUIRE BEFORE PAGING FORWARD' on initial page for row '{col_a_value}' — closing and restarting")
-                    # Hash raw pixel bytes — PNG compression is non-deterministic
-                    # so hashing PNG bytes can differ for identical pixel content.
-                    last_page_hash = hashlib.md5(cropped.tobytes()).hexdigest()
+                    # Hash a small thumbnail — exact pixel hashing is defeated by the
+                    # blinking cursor moving one cell between screenshots (same visual
+                    # content but different pixels).  A 64×64 downscale blends the
+                    # cursor away so duplicate pages hash identically.
+                    try:
+                        _resample = Image.Resampling.LANCZOS  # Pillow 10+
+                    except AttributeError:
+                        _resample = Image.LANCZOS              # Pillow <10
+                    last_page_hash = hashlib.md5(
+                        cropped.resize((64, 64), _resample).tobytes()
+                    ).hexdigest()
                     del png_bytes, img, cropped
                     rows_processed += 1
 
@@ -1236,7 +1445,7 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                     page_num = 1
                     while True:
                         try:
-                            if not send_terminal_text(driver, Keys.F8):
+                            if not press_terminal_f8(driver):
                                 logger.warning("Unable to send F8 key for paging")
                                 break
                             time.sleep(2)
@@ -1279,8 +1488,14 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                             else:
                                 cropped_paged = img_paged
 
-                            # Hash raw pixel bytes for reliable duplicate detection
-                            new_page_hash = hashlib.md5(cropped_paged.tobytes()).hexdigest()
+                            # Hash a thumbnail for the same cursor-blending reason
+                            try:
+                                _resample = Image.Resampling.LANCZOS
+                            except AttributeError:
+                                _resample = Image.LANCZOS
+                            new_page_hash = hashlib.md5(
+                                cropped_paged.resize((64, 64), _resample).tobytes()
+                            ).hexdigest()
 
                             if new_page_hash == last_page_hash:
                                 logger.info("Duplicate page detected after F8 — stopping paging for this row")
@@ -1345,6 +1560,14 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
 
                     logger.info(f"Row '{col_a_value}' completed successfully.")
 
+                    # Press F12 (Return) to go back to the query screen so the next
+                    # row's cursor click lands on GRAP529B, not the results screen.
+                    time.sleep(1)
+                    if not press_terminal_f12(driver):
+                        logger.warning("F12 Return failed after row completion — next row may have cursor positioning issues")
+                    else:
+                        time.sleep(2)  # Allow query screen to fully render before next row's TAB
+
                 except InvalidSessionIdException:
                     logger.error(f"Browser session lost while processing row '{col_a_value}' - stopping all remaining rows")
                     if screenshot_taken and status_cell.value != "Completed":
@@ -1391,13 +1614,6 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
         logger.info("Automation completed successfully")
         messagebox.showinfo("Automation Complete", "Automation Completed.")
 
-        # =====================================================
-        # KEEP OPEN
-        # =====================================================
-
-        while True:
-            time.sleep(1)
-
     except Exception as e:
 
         logger.error(
@@ -1414,8 +1630,15 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                 pass
             driver = None
 
-        # Retry if there are uncompleted rows and attempts remain
-        if _has_uncompleted_rows(excel_path, "Sheet1") and _attempt < _max_retries:
+        # Determine whether a retry is possible
+        has_uncompleted = False
+        if excel_path:
+            try:
+                has_uncompleted = _has_uncompleted_rows(excel_path, "Sheet1")
+            except Exception:
+                has_uncompleted = True  # assume uncompleted if we can't check
+
+        if has_uncompleted and _attempt < _max_retries:
             logger.info(f"Restarting automation in 3 seconds (attempt {_attempt + 1}/{_max_retries})...")
             time.sleep(3)
             # Schedule retry via module-level state — the while loop in __main__
@@ -1425,7 +1648,7 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
             _pending_retry_state['output_dir'] = _output_dir
             _pending_retry_state['attempt'] = _attempt + 1
             _pending_retry_state['max_retries'] = _max_retries
-        elif not _has_uncompleted_rows(excel_path, "Sheet1"):
+        elif excel_path and not has_uncompleted:
             # All rows completed — the error was on the last row but everything is done.
             # Run OCR and show success instead of the failure message.
             logger.info("All rows are Completed — running OCR and showing success.")
@@ -1439,12 +1662,22 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
         else:
             if _attempt >= _max_retries:
                 logger.error(f"Maximum retries ({_max_retries}) reached.")
-            input("\nAutomation failed. Press Enter to close...")
+            else:
+                # No excel_path yet (crashed before file dialog) — retry will re-show dialog
+                if excel_path is None and _attempt < _max_retries:
+                    logger.info(f"Restarting automation in 3 seconds (attempt {_attempt + 1}/{_max_retries})...")
+                    time.sleep(3)
+                    _pending_retry_state['retry'] = True
+                    _pending_retry_state['excel_path'] = None
+                    _pending_retry_state['output_dir'] = None
+                    _pending_retry_state['attempt'] = _attempt + 1
+                    _pending_retry_state['max_retries'] = _max_retries
+                else:
+                    input("\nAutomation failed. Press Enter to close...")
 
     finally:
 
         logger.info("Script finished")
-        # driver.quit()
 
 
 if __name__ == "__main__":
