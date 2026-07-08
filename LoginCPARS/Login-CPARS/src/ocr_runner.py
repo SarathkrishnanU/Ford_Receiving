@@ -180,10 +180,27 @@ def run_ocr(folder_path=FOLDER_PATH):
         matches = receipt_pattern.findall(text)
         logger.info(f"OCR: {len(matches)} match(es) found in {file_name}")
 
-        for match in matches:
-            mc_num, status_info, rec_dt, ship_dt, invoice_num, packing_slip, qty_recd = match
-            status_match = re.search(r'(OK|PR|@\d+|\d{2})', status_info)
-            status = status_match.group(1) if status_match else status_info.strip()
+        if matches:
+            for match in matches:
+                mc_num, status_info, rec_dt, ship_dt, invoice_num, packing_slip, qty_recd = match
+                status_match = re.search(r'(OK|PR|@\d+|\d{2})', status_info)
+                status = status_match.group(1) if status_match else status_info.strip()
+                rows.append({
+                    "File Name": file_name,
+                    "DIV": div,
+                    "PLT": plt,
+                    "DOC NO": doc_no,
+                    "ITEM": item,
+                    "Order Qty": order_qty,
+                    "MC/PA Number": mc_num,
+                    "Status": status,
+                    "Rec Dt": rec_dt,
+                    "Ship Dt": ship_dt,
+                    "Qty/Recd": qty_recd,
+                    "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+        else:
+            # No receipt rows found — still include the image so all 27 appear in output
             rows.append({
                 "File Name": file_name,
                 "DIV": div,
@@ -191,16 +208,20 @@ def run_ocr(folder_path=FOLDER_PATH):
                 "DOC NO": doc_no,
                 "ITEM": item,
                 "Order Qty": order_qty,
-                "MC/PA Number": mc_num,
-                "Status": status,
-                "Rec Dt": rec_dt,
-                "Ship Dt": ship_dt,
-                "Qty/Recd": qty_recd,
+                "MC/PA Number": None,
+                "Status": None,
+                "Rec Dt": None,
+                "Ship Dt": None,
+                "Qty/Recd": None,
                 "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
 
     df = pd.DataFrame(rows)
     output_excel = os.path.join(folder_path, "OCR_Extracted.xlsx")
+
+    if df.empty:
+        logger.info("OCR: No rows extracted — skipping Excel output")
+        return
 
     with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Sheet1')
