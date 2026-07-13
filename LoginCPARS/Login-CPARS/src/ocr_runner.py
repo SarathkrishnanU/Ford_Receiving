@@ -2,6 +2,7 @@ import os
 import re
 import logging
 import shutil
+import time
 import pandas as pd
 from PIL import Image, ImageEnhance
 import pytesseract
@@ -17,10 +18,33 @@ _TESSERACT_CANDIDATES = [
     r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
 ]
 
-_TESSERACT_DOWNLOAD_URL = (
+_TESSERACT_FALLBACK_URL = (
     "https://github.com/UB-Mannheim/tesseract/releases/download/"
-    "v5.5.0.20241111/tesseract-ocr-w64-setup-5.5.0.20241111.exe"
+    "v5.4.0.20240606/tesseract-ocr-w64-setup-5.4.0.20240606.exe"
 )
+
+
+def _get_tesseract_download_url():
+    """Fetch the latest Tesseract Windows x64 installer URL from the GitHub API."""
+    try:
+        import requests as _requests
+        resp = _requests.get(
+            "https://api.github.com/repos/UB-Mannheim/tesseract/releases/latest",
+            timeout=15,
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        resp.raise_for_status()
+        assets = resp.json().get("assets", [])
+        for asset in assets:
+            name = asset.get("name", "")
+            if name.startswith("tesseract-ocr-w64-setup") and name.endswith(".exe"):
+                url = asset["browser_download_url"]
+                logger.info(f"Latest Tesseract installer: {url}")
+                return url
+    except Exception as exc:
+        logger.warning(f"Could not fetch latest Tesseract release from GitHub API: {exc}")
+    logger.warning(f"Falling back to hardcoded URL: {_TESSERACT_FALLBACK_URL}")
+    return _TESSERACT_FALLBACK_URL
 
 
 def _ensure_tesseract():
@@ -53,21 +77,44 @@ def _ensure_tesseract():
     tmp_path = None
     try:
         import requests as _requests
+        download_url = _get_tesseract_download_url()
         with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as tmp:
             tmp_path = tmp.name
-        logger.info(f"Downloading Tesseract from: {_TESSERACT_DOWNLOAD_URL}")
-        response = _requests.get(_TESSERACT_DOWNLOAD_URL, stream=True, timeout=120)
+        logger.info(f"Downloading Tesseract from: {download_url}")
+        response = _requests.get(download_url, stream=True, timeout=120)
         response.raise_for_status()
         with open(tmp_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=65536):
                 if chunk:
                     f.write(chunk)
         logger.info("Download complete. Running silent install...")
-        subprocess.run(
-            [tmp_path, "/S", f"/D={install_dir}"],
-            check=True,
-            timeout=180
-        )
+        try:
+            subprocess.run(
+                [tmp_path, "/S", f"/D={install_dir}"],
+                check=True,
+                timeout=180
+            )
+        except OSError as _ose:
+            if getattr(_ose, 'winerror', None) == 740:
+                # Installer requires elevation — request UAC via ShellExecuteW runas
+                import ctypes
+                logger.info("Elevation required — requesting UAC prompt for Tesseract install...")
+                ret = ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", tmp_path, f'/S /D="{install_dir}"', None, 1
+                )
+                if ret <= 32:
+                    raise RuntimeError(
+                        f"ShellExecuteW (runas) failed with code {ret}. "
+                        "Please install Tesseract manually from https://github.com/UB-Mannheim/tesseract/wiki"
+                    )
+                # Poll for tesseract.exe (up to 3 minutes) since ShellExecuteW is async
+                logger.info("Waiting for elevated Tesseract installation to complete...")
+                for _i in range(60):
+                    time.sleep(3)
+                    if any(os.path.isfile(p) for p in _TESSERACT_CANDIDATES) or shutil.which('tesseract'):
+                        break
+            else:
+                raise
         logger.info("Tesseract installation complete.")
     except Exception as exc:
         logger.error(f"Failed to auto-install Tesseract: {exc}")
@@ -96,22 +143,109 @@ def _ensure_tesseract():
 
 FOLDER_PATH = r"C:\Users\skrishnan1\Videos\Ford Project Test"
 
+# ---------------------------------------------------------------------------
+# CORRECTIONS FILE  (learning mechanism)
+# ---------------------------------------------------------------------------
+# corrections.json lives next to the exe (or script).  Add entries here to
+# teach the system about recurring misreadings without changing any code.
+#
+# Structure:
+#   {
+#     "global": { "wrong": "right", ... },          <- applied to all raw OCR text
+#     "DOC NO":  { "RL2614275l": "RL26142751", ... }, <- applied to that field only
+#     "ORDER QTY": { "1OO": "100", ... },
+#     "MC/PA Number": { "MC12345B": "MC123450", ... },
+#     "Rec Dt": {},
+#     "Ship Dt": {}
+#   }
+
+_DEFAULT_CORRECTIONS = {
+    "_comment": (
+        "Add known OCR misreadings as key->value pairs. "
+        "'global' corrections apply to the whole raw OCR text. "
+        "Field-name keys apply only to that extracted field."
+    ),
+    "global": {
+        "@": "0"
+    },
+    "DOC NO": {},
+    "ORDER QTY": {},
+    "MC/PA Number": {},
+    "Rec Dt": {},
+    "Ship Dt": {}
+}
+
+
+def _corrections_path():
+    import sys
+    base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) \
+        else os.path.dirname(os.path.abspath(__file__))
+    # For the installed exe the corrections file lives one level up (next to the exe)
+    candidate = os.path.join(base, 'corrections.json')
+    parent_candidate = os.path.join(os.path.dirname(base), 'corrections.json')
+    if os.path.isfile(parent_candidate):
+        return parent_candidate
+    return candidate
+
+
+def _load_corrections():
+    """Load corrections.json, creating it with defaults if missing."""
+    import json
+    path = _corrections_path()
+    if not os.path.isfile(path):
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(_DEFAULT_CORRECTIONS, f, indent=2)
+            logger.info(f"Created default corrections file: {path}")
+        except Exception as exc:
+            logger.warning(f"Could not create corrections file: {exc}")
+        return _DEFAULT_CORRECTIONS
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        logger.info(f"Loaded corrections file: {path} ({sum(len(v) for k, v in data.items() if k != '_comment' and isinstance(v, dict))} entries)")
+        return data
+    except Exception as exc:
+        logger.warning(f"Could not read corrections file ({exc}) — using defaults")
+        return _DEFAULT_CORRECTIONS
+
+
+def _apply_global_corrections(text, corrections):
+    """Apply global word-substitution corrections to raw OCR text."""
+    global_map = corrections.get('global', {})
+    for wrong, right in global_map.items():
+        text = text.replace(wrong, right)
+    return text
+
+
+def _apply_field_correction(value, field_name, corrections):
+    """Apply field-specific corrections to an already-extracted field value."""
+    if value is None:
+        return value
+    field_map = corrections.get(field_name, {})
+    for wrong, right in field_map.items():
+        value = value.replace(wrong, right)
+    return value
+
 
 def preprocess_image(image_path):
     img = cv2.imread(image_path)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     height, width = gray.shape
-    if width < 2000:
-        scale = 2000 / width
+    # Scale to at least 3000px wide for better character separation
+    if width < 3000:
+        scale = 3000 / width
         gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    # Denoise slightly before contrast enhancement
+    gray = cv2.fastNlMeansDenoising(gray, h=10)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
     enhanced = cv2.morphologyEx(enhanced, cv2.MORPH_CLOSE, kernel)
     _, thresh = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     pil_image = Image.fromarray(thresh)
     enhancer = ImageEnhance.Sharpness(pil_image)
-    return enhancer.enhance(2.5)
+    return enhancer.enhance(2.0)
 
 
 def between(text, start, end):
@@ -121,16 +255,99 @@ def between(text, start, end):
 
 
 def extract_order_qty_confident(text):
-    order_qty_match = re.search(r'Order\s*Qty:\s*(\d+)', text, re.IGNORECASE)
+    order_qty_match = re.search(r'Order\s*Qty:\s*([\d OlI]+)', text, re.IGNORECASE)
     if not order_qty_match:
         return None
-    qty_str = order_qty_match.group(1)
+    # Normalise common character confusions in numeric fields: l/I -> 1, O -> 0
+    qty_str = order_qty_match.group(1).strip()
+    qty_str = re.sub(r'[lI]', '1', qty_str)
+    qty_str = re.sub(r'O', '0', qty_str)
+    qty_str = re.sub(r'\s', '', qty_str)  # remove accidental spaces
     if len(qty_str) == 3 and qty_str[1] in '68':
         return qty_str[0] + '0'
     return qty_str
 
 
+def _fix_numeric(value):
+    """Normalise common OCR confusions in a purely-numeric string."""
+    if value is None:
+        return value
+    value = re.sub(r'[lI]', '1', value)
+    value = re.sub(r'O', '0', value)
+    value = re.sub(r'S', '5', value)   # S misread as 5 (or vice-versa) in numeric fields
+    value = re.sub(r'B', '8', value)   # B misread as 8 in numeric fields
+    value = re.sub(r'[Gg]', '9', value) # G/g misread as 9 in numeric fields
+    return value
+
+
+def _fix_doc_no(value):
+    """Fix DOC NO using its known fixed format: 2 alphabet chars + 8 digits.
+
+    e.g.  RL26142751  (RL = letters, 26142751 = digits)
+
+    First 2 positions: must be letters
+      digit-like -> letter:  0->O, 1->I, 5->S, 8->B, 6->G, 2->Z
+    Remaining positions: must be digits
+      letter-like -> digit:  O->0, l/I->1, S->5, B->8, G/g->9, Z->2
+    """
+    if value is None:
+        return value
+    value = value.strip().upper()
+    if len(value) < 2:
+        return value
+
+    _digit_to_letter = {'0': 'O', '1': 'I', '5': 'S', '8': 'B', '6': 'G', '2': 'Z'}
+    _letter_to_digit = {'O': '0', 'I': '1', 'L': '1', 'S': '5', 'B': '8', 'G': '9', 'Z': '2'}
+
+    prefix = ''.join(_digit_to_letter.get(ch, ch) for ch in value[:2])
+    suffix = value[2:]
+    suffix = re.sub(r'[lI]', '1', suffix)
+    suffix = ''.join(_letter_to_digit.get(ch, ch) if not ch.isdigit() else ch for ch in suffix)
+
+    return prefix + suffix
+
+
+def _fix_alphanumeric(value):
+    """Fix common OCR confusions in alphanumeric codes (DOC NO, MC number).
+
+    In IBM 3270 monospace font:
+      - digit 0 vs letter O  — context-dependent; digits after letters stay digits
+      - lowercase l / I vs digit 1
+      - S vs 5 when flanked by digits
+      - B vs 8 when flanked by digits
+    """
+    if value is None:
+        return value
+    # Replace standalone lowercase l with 1 when surrounded by digits
+    value = re.sub(r'(?<=\d)l(?=\d)', '1', value)
+    value = re.sub(r'(?<=\d)I(?=\d)', '1', value)
+    # Trailing lowercase l is almost always digit 1
+    value = re.sub(r'l$', '1', value)
+    # S between digits -> 5  (e.g. 2S3 -> 253)
+    value = re.sub(r'(?<=\d)S(?=\d)', '5', value)
+    # B between digits -> 8  (e.g. 1B2 -> 182)
+    value = re.sub(r'(?<=\d)B(?=\d)', '8', value)
+    return value
+
+
+def _fix_date(value):
+    """Fix common OCR confusions in MM/DD/YY date strings."""
+    if value is None:
+        return value
+    # Replace l/I with 1, O with 0 in date positions
+    value = re.sub(r'[lI]', '1', value)
+    value = re.sub(r'O', '0', value)
+    # Extra digit in middle segment: e.g. 07/113/26 -> 07/13/26
+    value = re.sub(r'(\d{1,2})/(\d{3})/(\d{2})',
+                   lambda m: f"{m.group(1)}/{m.group(2)[0]}{m.group(2)[2]}/{m.group(3)}",
+                   value)
+    return value
+
+
 def correct_ocr_errors(text):
+    # Strip degree symbol — Tesseract artifact on 3270 screens (e.g. '@°6' should be '06')
+    text = text.replace('°', '')
+    text = text.replace('\xb0', '')  # U+00B0 degree sign, same thing
     text = re.sub(r'(USD\s+)@(\d)', r'\g<1>0\g<2>', text, flags=re.IGNORECASE)
     text = re.sub(r'(\$)@(\d)', r'\g<1>0\g<2>', text)
     text = re.sub(r'(\d+\.\d+)@(\d+)', r'\g<1>0\g<2>', text)
@@ -140,7 +357,16 @@ def correct_ocr_errors(text):
     text = re.sub(r'@([0-9])', r'0\g<1>', text)
     text = re.sub(r'(\s)8(\d{8,})', r'\g<1>5\g<2>', text)
     text = re.sub(r'(LINE:\s*)([68])(\s)', r'\g<1>0\g<3>', text, flags=re.IGNORECASE)
-    text = re.sub(r'(\d{1,2})/(\d{3})/(\d{2})', lambda m: f"{m.group(1)}/{m.group(2)[0]}{m.group(2)[2]}/{m.group(3)}", text)
+    # Fix extra digit in date middle segment
+    text = re.sub(r'(\d{1,2})/(\d{3})/(\d{2})',
+                  lambda m: f"{m.group(1)}/{m.group(2)[0]}{m.group(2)[2]}/{m.group(3)}",
+                  text)
+    # l/I -> 1 when flanked by digits
+    text = re.sub(r'(?<=\d)[lI](?=\d)', '1', text)
+    # S -> 5 when flanked by digits (e.g. in doc numbers or quantities)
+    text = re.sub(r'(?<=\d)S(?=\d)', '5', text)
+    # Trailing l in alphanumeric tokens (e.g. RL26142751 misread as RL2614275l)
+    text = re.sub(r'([A-Z0-9]{6,})l(\b)', r'\g<1>1\g<2>', text)
     return text
 
 
@@ -156,6 +382,7 @@ def run_ocr(folder_path=FOLDER_PATH):
     if tesseract_path:
         pytesseract.pytesseract.tesseract_cmd = tesseract_path
 
+    corrections = _load_corrections()
     rows = []
 
     image_files = [f for f in os.listdir(folder_path) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
@@ -164,18 +391,37 @@ def run_ocr(folder_path=FOLDER_PATH):
     for file_name in image_files:
         logger.info(f"OCR: Processing: {file_name}")
         preprocessed_img = preprocess_image(os.path.join(folder_path, file_name))
-        config = '--psm 3 --oem 3 -c tessedit_write_output_file=0'
+        # --oem 1: LSTM engine only (more accurate than combined)
+        # --psm 6: uniform block of text (best for terminal screens)
+        # whitelist covers all characters present on IBM 3270 CPARS screens
+        config = (
+            '--oem 1 --psm 6 -c tessedit_write_output_file=0 '
+            '-c tessedit_char_whitelist='
+            'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+            'abcdefghijklmnopqrstuvwxyz'
+            '0123456789'
+            r' /.-:$,()#=_@'
+        )
         text = pytesseract.image_to_string(preprocessed_img, config=config)
         text = re.sub(r'[ ]{2,}', ' ', text)
+        # 1. Apply systematic regex corrections
         text = correct_ocr_errors(text)
+        # 2. Apply user-defined global corrections from corrections.json
+        text = _apply_global_corrections(text, corrections)
 
-        div = between(text, 'DIV:', 'PLT:')
-        plt = between(text, 'PLT:', 'DOC NO:')
-        doc_no = between(text, 'DOC NO:', 'ITEM:')
-        item = between(text, 'ITEM:', 'LINE:')
+        div     = between(text, 'DIV:', 'PLT:')
+        plt     = between(text, 'PLT:', 'DOC NO:')
+        doc_no  = between(text, 'DOC NO:', 'ITEM:')
+        item    = between(text, 'ITEM:', 'LINE:')
 
-        order_qty_match = re.search(r'Order\s*Qty:\s*(\d+)', text, re.IGNORECASE)
+        # Apply field-specific corrections + targeted fixups
+        doc_no = _apply_field_correction(_fix_doc_no(doc_no), 'DOC NO', corrections)
+        div    = _fix_numeric(div)
+        plt    = _fix_numeric(plt)
+
+        order_qty_match = re.search(r'Order\s*Qty:\s*[\d OlI]+', text, re.IGNORECASE)
         order_qty = extract_order_qty_confident(text) if order_qty_match else None
+        order_qty = _apply_field_correction(order_qty, 'ORDER QTY', corrections)
 
         matches = receipt_pattern.findall(text)
         logger.info(f"OCR: {len(matches)} match(es) found in {file_name}")
@@ -183,6 +429,11 @@ def run_ocr(folder_path=FOLDER_PATH):
         if matches:
             for match in matches:
                 mc_num, status_info, rec_dt, ship_dt, invoice_num, packing_slip, qty_recd = match
+                # Fix confusions in each extracted field
+                mc_num   = _apply_field_correction(_fix_alphanumeric(mc_num), 'MC/PA Number', corrections)
+                rec_dt   = _apply_field_correction(_fix_date(rec_dt), 'Rec Dt', corrections)
+                ship_dt  = _apply_field_correction(_fix_date(ship_dt), 'Ship Dt', corrections)
+                qty_recd = _fix_numeric(qty_recd)
                 status_match = re.search(r'(OK|PR|@\d+|\d{2})', status_info)
                 status = status_match.group(1) if status_match else status_info.strip()
                 rows.append({

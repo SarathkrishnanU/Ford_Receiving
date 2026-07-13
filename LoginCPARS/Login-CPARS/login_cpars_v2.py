@@ -783,6 +783,40 @@ def _fatal_stop(message):
     sys.exit(1)
 
 
+def _save_workbook_with_retry(workbook, excel_path, description=""):
+    """Save workbook, prompting the user to close the Excel file if it is locked."""
+    max_attempts = 10
+    for attempt in range(1, max_attempts + 1):
+        try:
+            workbook.save(excel_path)
+            logger.info(f"Excel saved: {description}")
+            return True
+        except PermissionError:
+            logger.warning(
+                f"Excel file locked (attempt {attempt}/{max_attempts}): {excel_path}"
+            )
+            if attempt < max_attempts:
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                messagebox.showwarning(
+                    "Excel File Locked",
+                    f"Cannot save progress to:\n{excel_path}\n\n"
+                    "Please close the Excel file, then click OK to retry."
+                )
+                root.destroy()
+            else:
+                logger.error(
+                    f"Could not save Excel after {max_attempts} attempts — "
+                    f"Completed status NOT written for: {description}"
+                )
+                return False
+        except Exception as exc:
+            logger.warning(f"Could not save Excel ({description}): {exc}")
+            return False
+    return False
+
+
 def _has_uncompleted_rows(excel_path, sheet_name="Sheet1"):
     """Return True if any row in the workbook is not yet marked Completed."""
     try:
@@ -900,11 +934,7 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                         f"({existing_screenshots}) — marking Completed and skipping"
                     )
                     status_cell.value = "Completed"
-                    try:
-                        workbook.save(excel_path)
-                        logger.info(f"Row '{col_a_value}' marked as Completed in Excel (screenshot existed)")
-                    except Exception as save_exc:
-                        logger.warning(f"Could not save Completed status for '{col_a_value}': {save_exc}")
+                    _save_workbook_with_retry(workbook, excel_path, f"Row '{col_a_value}' Completed (screenshot existed)")
                     continue
 
                 values = (row[3].value, row[4].value, row[5].value)  # Columns D, E, F
@@ -1035,7 +1065,7 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                     # =========================================
                     # HRD COVISINT
                     # =========================================
-                    hrd_covisint = wait.until(
+                    hrd_covisint = wait60.until(
                         EC.element_to_be_clickable(
                             (By.XPATH, "//div[contains(@class,'idp') and contains(@aria-label,'Covisint')]")
                         )
@@ -1332,11 +1362,7 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                             logger.info(f"'PAGING FORWARD INVALID' — no more pages for row '{col_a_value}', marking Completed")
                             if status_cell.value != "Completed":
                                 status_cell.value = "Completed"
-                                try:
-                                    workbook.save(excel_path)
-                                    logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
-                                except Exception as save_exc:
-                                    logger.warning(f"Could not save Completed status for row '{col_a_value}': {save_exc}")
+                                _save_workbook_with_retry(workbook, excel_path, f"Row '{col_a_value}' Completed (PAGING FORWARD INVALID)")
                             break
 
                         # Stop paging if terminal says to inquire before paging forward
@@ -1377,11 +1403,7 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                         if new_page_hash == last_page_hash:
                             logger.info("Duplicate page detected after F8 — stopping paging for this row")
                             status_cell.value = "Completed"
-                            try:
-                                workbook.save(excel_path)
-                                logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
-                            except Exception as save_exc:
-                                logger.warning(f"Could not save Completed status for row '{col_a_value}' (close Excel and retry): {save_exc}")
+                            _save_workbook_with_retry(workbook, excel_path, f"Row '{col_a_value}' Completed (duplicate page)")
                             del png_bytes_paged, img_paged, cropped_paged
                             break
 
@@ -1401,11 +1423,7 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                             except Exception as del_exc:
                                 logger.warning(f"Could not delete spurious screenshot: {del_exc}")
                             status_cell.value = "Completed"
-                            try:
-                                workbook.save(excel_path)
-                                logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
-                            except Exception as save_exc:
-                                logger.warning(f"Could not save Completed status: {save_exc}")
+                            _save_workbook_with_retry(workbook, excel_path, f"Row '{col_a_value}' Completed (spurious PAGING FORWARD INVALID)")
                             break
 
                         # Post-save safety: same rendering-lag issue for PLEASE INQUIRE —
@@ -1425,11 +1443,7 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                     # regardless of which break path was taken.
                     if screenshot_taken and status_cell.value != "Completed":
                         status_cell.value = "Completed"
-                        try:
-                            workbook.save(excel_path)
-                            logger.info(f"Row '{col_a_value}' marked as Completed in Excel")
-                        except Exception as save_exc:
-                            logger.warning(f"Could not save Completed status for row '{col_a_value}': {save_exc}")
+                        _save_workbook_with_retry(workbook, excel_path, f"Row '{col_a_value}' Completed (paging loop end)")
 
                     logger.info(f"Row '{col_a_value}' completed successfully.")
 
@@ -1437,20 +1451,12 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                     logger.error(f"Browser session lost while processing row '{col_a_value}' - stopping all remaining rows")
                     if screenshot_taken and status_cell.value != "Completed":
                         status_cell.value = "Completed"
-                        try:
-                            workbook.save(excel_path)
-                            logger.info(f"Row '{col_a_value}' marked as Completed before stopping (screenshot was taken)")
-                        except Exception as save_exc:
-                            logger.warning(f"Could not save Completed status for row '{col_a_value}': {save_exc}")
+                        _save_workbook_with_retry(workbook, excel_path, f"Row '{col_a_value}' Completed before stopping (screenshot taken)")
                     raise  # Browser is dead; cannot continue with more rows
                 except RuntimeError:
                     if screenshot_taken and status_cell.value != "Completed":
                         status_cell.value = "Completed"
-                        try:
-                            workbook.save(excel_path)
-                            logger.info(f"Row '{col_a_value}' marked as Completed before stopping (screenshot was taken)")
-                        except Exception as save_exc:
-                            logger.warning(f"Could not save Completed status for row '{col_a_value}': {save_exc}")
+                        _save_workbook_with_retry(workbook, excel_path, f"Row '{col_a_value}' Completed before stopping (screenshot taken)")
                     raise  # Fatal terminal errors — stop run and trigger retry
                 except Exception as row_exc:
                     logger.error(f"Error processing row '{col_a_value}': {row_exc}", exc_info=True)

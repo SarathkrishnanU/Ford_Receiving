@@ -4,7 +4,11 @@ a = Analysis(
     ['login_cpars_v2.py'],
     pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=[
+        ('src', 'src'),
+        ('.env.example', '.'),
+        ('corrections.json', '.'),
+    ],
     hiddenimports=[
         'selenium',
         'selenium.webdriver',

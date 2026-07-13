@@ -1,0 +1,12 @@
+{
+  "_comment": "Add known OCR misreadings as key->value pairs. 'global' corrections apply to the whole raw OCR text. Field-name keys apply only to that extracted field. Rebuild the app after editing this file if using the exe, OR just place this file next to LoginCPARS_v2.exe.",
+  "global": {
+    "@": "0",
+    "@\u00b06": "06"
+  },
+  "DOC NO": {},
+  "ORDER QTY": {},
+  "MC/PA Number": {},
+  "Rec Dt": {},
+  "Ship Dt": {}
+}
