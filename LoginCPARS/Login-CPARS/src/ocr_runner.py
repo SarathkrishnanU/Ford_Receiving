@@ -255,7 +255,7 @@ def between(text, start, end):
 
 
 def extract_order_qty_confident(text):
-    order_qty_match = re.search(r'Order\s*Qty:\s*([\d OlI]+)', text, re.IGNORECASE)
+    order_qty_match = re.search(r'Order\s*Qty:?\s*([\d OlI]+)', text, re.IGNORECASE)
     if not order_qty_match:
         return None
     # Normalise common character confusions in numeric fields: l/I -> 1, O -> 0
@@ -278,6 +278,18 @@ def _fix_numeric(value):
     value = re.sub(r'B', '8', value)   # B misread as 8 in numeric fields
     value = re.sub(r'[Gg]', '9', value) # G/g misread as 9 in numeric fields
     return value
+
+
+def _fix_div(value):
+    """Fix common OCR confusions for the DIV field (single letter, e.g. 'B').
+
+    OCR often reads letter 'B' as digit '8', 'G' as '6', etc.
+    Apply digit-to-letter mapping so the division letter is preserved.
+    """
+    if value is None:
+        return value
+    _digit_to_letter = {'0': 'O', '1': 'I', '5': 'S', '8': 'B', '6': 'G', '2': 'Z'}
+    return ''.join(_digit_to_letter.get(ch, ch) for ch in value.strip().upper())
 
 
 def _fix_doc_no(value):
@@ -344,6 +356,21 @@ def _fix_date(value):
     return value
 
 
+def _format_date_mmddyy(value):
+    """Convert a 6-digit MMDDYY string (no slashes) to MM/DD/YY format.
+
+    IBM 3270 OCR frequently drops the slash characters, yielding bare
+    digit sequences such as '071026' instead of '07/10/26'.
+    Falls back to _fix_date() for values that already contain slashes.
+    """
+    if value is None:
+        return value
+    v = str(value).strip()
+    if re.match(r'^\d{6}$', v):
+        return f"{v[:2]}/{v[2:4]}/{v[4:]}"
+    return _fix_date(v)
+
+
 def correct_ocr_errors(text):
     # Strip degree symbol — Tesseract artifact on 3270 screens (e.g. '@°6' should be '06')
     text = text.replace('°', '')
@@ -370,9 +397,16 @@ def correct_ocr_errors(text):
     return text
 
 
+# Pattern handles IBM 3270 HOD OCR output where:
+#   - 'S' and 'MC' are merged (no space): SMC26191066
+#   - Status (OK/PR/2-digit code) is directly concatenated with date: OK071026
+#   - Dates are 6-digit MMDDYY without slashes: 071026 (= 07/10/26)
+#   - Two dates are concatenated without separator: 071026071026
+# Groups: MC/PA Number, Status, Rec Dt (MMDDYY), Ship Dt (MMDDYY),
+#         Invoice No, Extd Price, Packing Slip No, Qty/Recd
 receipt_pattern = re.compile(
-    r'S\s+(MC\d+\S*)\s+(.+?)(\d{1,2}/\d{1,3}/\d{2})\s+(\d{1,2}/\d{1,3}/\d{2})\s+USD\s*(\S+).*?\n\s*(\d*)\s*([-\d]+)',
-    re.MULTILINE | re.IGNORECASE | re.DOTALL
+    r'S\s*(MC\d+\S*)\s+([A-Z]{2}|\d{2})\s*(\d{6})\s*(\d{6})\s*USD\s*(\S+)\s+([\d,]+)\s*\n\s*(\S+)\s+([-\d]+)',
+    re.MULTILINE | re.IGNORECASE
 )
 
 
@@ -409,17 +443,26 @@ def run_ocr(folder_path=FOLDER_PATH):
         # 2. Apply user-defined global corrections from corrections.json
         text = _apply_global_corrections(text, corrections)
 
-        div     = between(text, 'DIV:', 'PLT:')
-        plt     = between(text, 'PLT:', 'DOC NO:')
-        doc_no  = between(text, 'DOC NO:', 'ITEM:')
-        item    = between(text, 'ITEM:', 'LINE:')
+        # Fields are often merged without colons in IBM 3270 OCR output
+        # e.g. 'DIVBPLT43DOCNORL26442192ITEM012' — handle both spaced and merged forms
+        _div_m  = re.search(r'DIV\s*:?\s*([A-Z\d]+?)\s*(?=PLT)', text, re.IGNORECASE)
+        div     = _div_m.group(1).strip() if _div_m else between(text, 'DIV:', 'PLT:')
+
+        _plt_m  = re.search(r'PLT\s*:?\s*(\d+)\s*(?=DOC)', text, re.IGNORECASE)
+        plt     = _plt_m.group(1).strip() if _plt_m else between(text, 'PLT:', 'DOC NO:')
+
+        _doc_m  = re.search(r'DOC\s*NO\s*:?\s*([A-Z]{1,3}\d+)', text, re.IGNORECASE)
+        doc_no  = _doc_m.group(1).strip() if _doc_m else between(text, 'DOC NO:', 'ITEM:')
+
+        _item_m = re.search(r'ITEM\s*:?\s*([A-Z\d]+?)\s*(?=LINE)', text, re.IGNORECASE)
+        item    = _item_m.group(1).strip() if _item_m else between(text, 'ITEM:', 'LINE:')
 
         # Apply field-specific corrections + targeted fixups
         doc_no = _apply_field_correction(_fix_doc_no(doc_no), 'DOC NO', corrections)
-        div    = _fix_numeric(div)
+        div    = _fix_div(div)
         plt    = _fix_numeric(plt)
 
-        order_qty_match = re.search(r'Order\s*Qty:\s*[\d OlI]+', text, re.IGNORECASE)
+        order_qty_match = re.search(r'Order\s*Qty:?\s*[\d OlI]+', text, re.IGNORECASE)
         order_qty = extract_order_qty_confident(text) if order_qty_match else None
         order_qty = _apply_field_correction(order_qty, 'ORDER QTY', corrections)
 
@@ -428,14 +471,13 @@ def run_ocr(folder_path=FOLDER_PATH):
 
         if matches:
             for match in matches:
-                mc_num, status_info, rec_dt, ship_dt, invoice_num, packing_slip, qty_recd = match
+                mc_num, status, rec_dt_raw, ship_dt_raw, invoice_num, _extd_price, packing_slip, qty_recd = match
                 # Fix confusions in each extracted field
                 mc_num   = _apply_field_correction(_fix_alphanumeric(mc_num), 'MC/PA Number', corrections)
-                rec_dt   = _apply_field_correction(_fix_date(rec_dt), 'Rec Dt', corrections)
-                ship_dt  = _apply_field_correction(_fix_date(ship_dt), 'Ship Dt', corrections)
+                rec_dt   = _apply_field_correction(_format_date_mmddyy(rec_dt_raw), 'Rec Dt', corrections)
+                ship_dt  = _apply_field_correction(_format_date_mmddyy(ship_dt_raw), 'Ship Dt', corrections)
                 qty_recd = _fix_numeric(qty_recd)
-                status_match = re.search(r'(OK|PR|@\d+|\d{2})', status_info)
-                status = status_match.group(1) if status_match else status_info.strip()
+                status   = status.strip()
                 rows.append({
                     "File Name": file_name,
                     "DIV": div,
