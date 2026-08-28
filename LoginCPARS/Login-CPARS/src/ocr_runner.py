@@ -398,14 +398,16 @@ def correct_ocr_errors(text):
 
 
 # Pattern handles IBM 3270 HOD OCR output where:
-#   - 'S' and 'MC' are merged (no space): SMC26191066
+#   - A selection indicator letter (e.g. 'S') may be merged before MC/PA: SMC26191066
+#   - MC or PA prefix is supported: MC26191066, PA26191066
 #   - Status (OK/PR/2-digit code) is directly concatenated with date: OK071026
-#   - Dates are 6-digit MMDDYY without slashes: 071026 (= 07/10/26)
+#   - Dates may be 6-digit MMDDYY without slashes: 071026 (= 07/10/26)
+#     OR already slashed MM/DD/YY: 07/10/26
 #   - Two dates are concatenated without separator: 071026071026
 # Groups: MC/PA Number, Status, Rec Dt (MMDDYY), Ship Dt (MMDDYY),
 #         Invoice No, Extd Price, Packing Slip No, Qty/Recd
 receipt_pattern = re.compile(
-    r'S\s*(MC\d+\S*)\s+([A-Z]{2}|\d{2})\s*(\d{6})\s*(\d{6})\s*USD\s*(\S+)\s+([\d,]+)\s*\n\s*(\S+)\s+([-\d]+)',
+    r'[A-Z]?\s*((?:MC|PA)\d+\S*)\s+([A-Z]{2}|\d{2})\s*(\d{6}|\d{2}/\d{2}/\d{2})\s*(\d{6}|\d{2}/\d{2}/\d{2})\s*USD\s*(\S+)(?:\s+([\d,]+))?\s*\n\s*(\S+)\s+([-\d]+)',
     re.MULTILINE | re.IGNORECASE
 )
 
