@@ -8,28 +8,72 @@ import logging
 import sys
 import time
 import os
-import openpyxl
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from selenium import webdriver
 
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
+# =========================================================
+# GLOBAL CRASH HANDLER
+# Show any unhandled exception (including import errors) as a
+# messagebox instead of a silent blink — critical for Remote Desktop.
+# =========================================================
+def _show_crash(exc_type, exc_value, exc_tb):
+    import traceback
+    msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        _root = tk.Tk()
+        _root.withdraw()
+        messagebox.showerror(
+            "Startup Error",
+            f"The application failed to start:\n\n{exc_value}\n\n"
+            f"Full details:\n{msg}\n\n"
+            "Make sure all required packages are installed and the "
+            "'src' folder is present next to this script."
+        )
+        _root.destroy()
+    except Exception:
+        pass  # If even tkinter fails, nothing we can do
 
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+sys.excepthook = _show_crash
 
-from selenium.webdriver.edge.service import Service
-from selenium.webdriver.edge.options import Options
 
-from webdriver_manager.microsoft import EdgeChromiumDriverManager
-from selenium.common.exceptions import InvalidSessionIdException, WebDriverException
-from src.terminal_utils import send_terminal_text, press_terminal_enter
-from src.excel_utils import paste_excel_values_to_terminal
+try:
+    import openpyxl
+except ImportError as _e:
+    raise ImportError(f"Missing package 'openpyxl'. Run: pip install openpyxl\n({_e})") from _e
 
-from dotenv import load_dotenv
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.keys import Keys
+    from selenium.webdriver.common.action_chains import ActionChains
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.chrome.options import Options
+    from selenium.common.exceptions import InvalidSessionIdException, WebDriverException
+except ImportError as _e:
+    raise ImportError(f"Missing package 'selenium'. Run: pip install selenium\n({_e})") from _e
+
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+except ImportError as _e:
+    raise ImportError(f"Missing package 'webdriver-manager'. Run: pip install webdriver-manager\n({_e})") from _e
+
+try:
+    from src.terminal_utils import send_terminal_text as _src_send_terminal_text
+    from src.terminal_utils import press_terminal_enter as _src_press_terminal_enter
+    from src.excel_utils import paste_excel_values_to_terminal
+except ImportError as _e:
+    raise ImportError(
+        f"Cannot import from 'src' folder. Make sure the 'src' directory "
+        f"(with terminal_utils.py and excel_utils.py) is present next to this script.\n({_e})"
+    ) from _e
+
+try:
+    from dotenv import load_dotenv
+except ImportError as _e:
+    raise ImportError(f"Missing package 'python-dotenv'. Run: pip install python-dotenv\n({_e})") from _e
 
 # Determine app directory next to the exe (or script during development)
 _app_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
@@ -481,6 +525,60 @@ def press_terminal_right_arrow(driver):
     return False
 
 
+def press_terminal_f5(driver):
+    """Send F5 as a function key to the IBM HOD terminal via JavaScript dispatch.
+
+    IMPORTANT: F5 must NOT be sent via ActionChains on Remote Desktop — RDP
+    intercepts it as a browser/session refresh before it reaches the page.
+    JavaScript dispatchEvent bypasses RDP and goes directly to HOD.
+    """
+    def _op(body):
+        try:
+            driver.execute_script(
+                "arguments[0].dispatchEvent(new KeyboardEvent('keydown', {"
+                " key:'F5', code:'F5', keyCode:116, which:116,"
+                " bubbles:true, cancelable:true}));",
+                body
+            )
+            return True
+        except Exception as exc:
+            logger.debug(f"F5 JS dispatch failed: {exc}")
+        return False
+
+    if _run_in_terminal_context(driver, _op, "Sending F5"):
+        logger.info("F5 key sent in terminal")
+        return True
+
+    return False
+
+
+def press_terminal_f11(driver):
+    """Send F11 as a function key to the IBM HOD terminal via JavaScript dispatch.
+
+    IMPORTANT: F11 must NOT be sent via ActionChains on Remote Desktop — RDP
+    intercepts it as a browser fullscreen toggle before it reaches the page.
+    JavaScript dispatchEvent bypasses RDP and goes directly to HOD.
+    """
+    def _op(body):
+        try:
+            driver.execute_script(
+                "arguments[0].dispatchEvent(new KeyboardEvent('keydown', {"
+                " key:'F11', code:'F11', keyCode:122, which:122,"
+                " bubbles:true, cancelable:true}));",
+                body
+            )
+            return True
+        except Exception as exc:
+            logger.debug(f"F11 JS dispatch failed: {exc}")
+        return False
+
+    if _run_in_terminal_context(driver, _op, "Sending F11"):
+        logger.info("F11 key sent in terminal")
+        return True
+
+    return False
+
+
 def press_terminal_f8(driver):
     """Send F8 as a function key to the IBM HOD terminal.
 
@@ -766,6 +864,22 @@ def _wait_for_terminal_text(driver, text, timeout=30, poll=1):
     return False
 
 
+def close_all_edge_sessions():
+    """Kill any lingering chromedriver / chrome processes before starting a fresh session."""
+    import subprocess
+    for proc in ("chromedriver.exe", "chrome.exe"):
+        try:
+            result = subprocess.run(
+                ["taskkill", "/F", "/IM", proc],
+                capture_output=True, text=True
+            )
+            if "SUCCESS" in result.stdout:
+                logger.info(f"Closed existing process: {proc}")
+        except Exception as exc:
+            logger.debug(f"Could not kill {proc}: {exc}")
+    time.sleep(2)  # let OS release file handles before new driver starts
+
+
 def _fatal_stop(message):
     """Show error messagebox, quit browser, and exit immediately — no retry."""
     global driver
@@ -906,29 +1020,66 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
         os.makedirs(screenshots_dir, exist_ok=True)
 
         # =====================================================
+        # CLOSE ANY EXISTING EDGE SESSIONS
+        # =====================================================
+        close_all_edge_sessions()
+
+        # =====================================================
         # LAUNCH BROWSER ONCE
         # =====================================================
         edge_options = Options()
         edge_options.add_argument("--start-maximized")
+        edge_options.add_argument("--window-size=1920,1080")       # consistent size on RDP
+        edge_options.add_argument("--force-device-scale-factor=1") # prevent DPI scaling on RDP
+        edge_options.add_argument("--disable-gpu")                 # RDP has no GPU acceleration
         edge_options.add_argument("--disable-component-update")
         edge_options.add_argument("--no-first-run")
         edge_options.add_argument("--no-default-browser-check")
         edge_options.add_argument("--disable-features=BackForwardCache")
-        edge_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        # Hide all automation indicators so the browser looks like a normal user session
+        edge_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         edge_options.add_experimental_option("useAutomationExtension", False)
+        edge_options.add_argument("--disable-blink-features=AutomationControlled")
+        edge_options.add_argument("--disable-infobars")
+        edge_options.add_argument("--disable-extensions")
+        edge_options.add_argument("--disable-popup-blocking")
+        edge_options.add_argument("--disable-notifications")
+        edge_options.add_argument("--disable-save-password-bubble")
+        edge_options.add_argument("--credentials-enable-service=false")
+        edge_options.add_argument("--password-store=basic")
+        edge_options.add_argument(
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        )
+        edge_options.add_experimental_option("prefs", {
+            "credentials_enable_service": False,
+            "profile.password_manager_enabled": False,
+        })
 
-        logger.info("Launching Edge...")
+        logger.info("Launching Chrome...")
         try:
-            _edge_driver_path = EdgeChromiumDriverManager().install()
-            driver = webdriver.Edge(
-                service=Service(_edge_driver_path),
+            _chrome_driver_path = ChromeDriverManager().install()
+            driver = webdriver.Chrome(
+                service=Service(_chrome_driver_path),
                 options=edge_options
             )
         except Exception as _wdm_exc:
-            logger.warning(f"EdgeChromiumDriverManager failed ({_wdm_exc}) — using Selenium Manager fallback")
-            driver = webdriver.Edge(options=edge_options)
+            logger.warning(f"ChromeDriverManager failed ({_wdm_exc}) — using Selenium Manager fallback")
+            driver = webdriver.Chrome(options=edge_options)
         driver.set_page_load_timeout(300)  # 5 minutes for slow portal pages
-        logger.info("Edge launched successfully")
+
+        # Remove the navigator.webdriver flag that websites check to detect automation
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                window.chrome = { runtime: {} };
+            """
+        })
+
+        logger.info("Chrome launched successfully")
 
         wait = WebDriverWait(driver, 30)
         wait60 = WebDriverWait(driver, 120)
@@ -1236,8 +1387,10 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                     logger.info("'CPARS  MASTER  MENU' confirmed in terminal")
 
                     logger.info("Sending F5 key to terminal")
-                    if not send_terminal_text(driver, Keys.F5):
+                    if not press_terminal_f5(driver):
                         raise RuntimeError("Unable to send F5 key after terminal code 02")
+                    # Wait for CPARS MASTER MENU to navigate away before checking next screen
+                    time.sleep(5)
 
                     # =========================================
                     # CHECK FOR 'CPARS-O-GRAM'
@@ -1248,14 +1401,24 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                     logger.info("'CPARS-O-GRAM' confirmed in terminal")
 
                     logger.info("Sending F11 key to terminal")
-                    if not send_terminal_text(driver, Keys.F11):
+                    if not press_terminal_f11(driver):
                         raise RuntimeError("Unable to send F11 key after F5")
+                    # Wait for CPARS-O-GRAM screen to navigate away before checking next screen
+                    time.sleep(5)
+
+                    # Dismiss 'All sessions will be closed' confirmation if it appears
+                    if _wait_for_terminal_text(driver, "All sessions will be closed", timeout=10):
+                        logger.info("'All sessions will be closed' prompt detected — pressing Enter to confirm")
+                        if not press_terminal_enter(driver):
+                            raise RuntimeError("Unable to press ENTER to dismiss 'All sessions will be closed'")
+                        time.sleep(3)
 
                     # =========================================
                     # CHECK FOR 'CPARS REQUISITION MENU'
                     # =========================================
                     logger.info("Checking terminal for 'CPARS REQUISITION MENU' before pressing '9'")
                     if not _wait_for_terminal_text(driver, "CPARS REQUISITION MENU", timeout=30):
+                        logger.error(f"Terminal content after F11: {_get_terminal_text(driver)}")
                         raise RuntimeError("'CPARS REQUISITION MENU' not found in terminal — cannot proceed with pressing '9'")
                     logger.info("'CPARS REQUISITION MENU' confirmed in terminal")
 
@@ -1383,7 +1546,7 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                     for y in range(height):
                         for x in range(width):
                             r, g, b = pixels[x, y]
-                            if r < 30 and g < 30 and b < 30:
+                            if r < 50 and g < 50 and b < 50:  # threshold=50 handles RDP lossy compression
                                 min_x = min(min_x, x)
                                 min_y = min(min_y, y)
                                 max_x = max(max_x, x)
@@ -1458,7 +1621,7 @@ def main(_excel_path=None, _output_dir=None, _attempt=1, _max_retries=25):
                         for yp in range(height_p):
                             for xp in range(width_p):
                                 rp, gp, bp = pixels_p[xp, yp]
-                                if rp < 30 and gp < 30 and bp < 30:
+                                if rp < 50 and gp < 50 and bp < 50:  # threshold=50 handles RDP lossy compression
                                     min_xp = min(min_xp, xp)
                                     min_yp = min(min_yp, yp)
                                     max_xp = max(max_xp, xp)
@@ -1644,18 +1807,29 @@ if __name__ == "__main__":
     _attempt_arg = 1
     _max_retries_arg = 100
 
-    while True:
-        _pending_retry_state.clear()
-        main(
-            _excel_path=_excel_path_arg,
-            _output_dir=_output_dir_arg,
-            _attempt=_attempt_arg,
-            _max_retries=_max_retries_arg,
-        )
-        if _pending_retry_state.get('retry'):
-            _excel_path_arg = _pending_retry_state['excel_path']
-            _output_dir_arg = _pending_retry_state['output_dir']
-            _attempt_arg = _pending_retry_state['attempt']
-            _max_retries_arg = _pending_retry_state['max_retries']
-        else:
-            break
+    try:
+        while True:
+            _pending_retry_state.clear()
+            main(
+                _excel_path=_excel_path_arg,
+                _output_dir=_output_dir_arg,
+                _attempt=_attempt_arg,
+                _max_retries=_max_retries_arg,
+            )
+            if _pending_retry_state.get('retry'):
+                _excel_path_arg = _pending_retry_state['excel_path']
+                _output_dir_arg = _pending_retry_state['output_dir']
+                _attempt_arg = _pending_retry_state['attempt']
+                _max_retries_arg = _pending_retry_state['max_retries']
+            else:
+                break
+    except Exception as _top_exc:
+        import traceback
+        _msg = traceback.format_exc()
+        try:
+            _root2 = tk.Tk()
+            _root2.withdraw()
+            messagebox.showerror("Fatal Error", f"{_top_exc}\n\n{_msg}")
+            _root2.destroy()
+        except Exception:
+            pass

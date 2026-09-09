@@ -7,7 +7,6 @@ a = Analysis(
     datas=[
         ('src', 'src'),
         ('.env.example', '.'),
-        ('corrections.json', '.'),
     ],
     hiddenimports=[
         'selenium',
@@ -33,7 +32,6 @@ a = Analysis(
         'openpyxl.utils',
         'pandas',
         'pandas.io.formats.excel',
-        'pytesseract',
         'PIL',
         'PIL.Image',
         'PIL.ImageEnhance',
