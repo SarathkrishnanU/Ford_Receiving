@@ -10,6 +10,16 @@ confuses on this font (slashed 0 vs O, S vs 5, 1 vs l vs I, B vs 8).
 import logging
 import os
 
+# Single-threaded BLAS: multi-threaded matmul reduction order is not fixed
+# run-to-run, which flips the argmax between confusable glyph templates
+# (I/l, 2/Z, 6/G, 8/B) that score nearly identically. Must be set before
+# numpy loads its BLAS backend.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+
 import cv2
 import numpy as np
 
@@ -86,6 +96,9 @@ def cell_windows(image_path):
     lum = term.max(axis=2).astype(np.float32) / 255.0
     ink = (lum > INK_LEVEL).astype(np.float32)
     x0, px, y0, py = detect_grid(ink)
+    logger.info("%s: image=%dx%d terminal=%dx%d grid pitch px=%.3f py=%.3f (template size %dx%d)",
+                os.path.basename(image_path), bgr.shape[1], bgr.shape[0],
+                term.shape[1], term.shape[0], px, py, CELL_W, CELL_H)
 
     h, w = lum.shape
     # Margin absorbs both the registration search and a grid origin that starts
@@ -108,12 +121,18 @@ def cell_windows(image_path):
 
 
 def match_score(win, templates, norms):
-    """Best NCC score and template index over all +/-PAD registration shifts."""
+    """Best NCC score and template index over all +/-PAD registration shifts.
+
+    Computed in float64: float32 leaves near-ties between confusable glyph
+    pairs (I/l, 2/Z, 6/G, 8/B) that can resolve to either template depending
+    on summation order, making recognition non-deterministic.
+    """
     best_score, best_idx = -1.0, -1
-    flat = templates.reshape(len(templates), -1)
+    flat = templates.reshape(len(templates), -1).astype(np.float64)
+    norms = norms.astype(np.float64)
     for dy in range(2 * PAD + 1):
         for dx in range(2 * PAD + 1):
-            patch = win[dy:dy + CELL_H, dx:dx + CELL_W].ravel()
+            patch = win[dy:dy + CELL_H, dx:dx + CELL_W].ravel().astype(np.float64)
             pn = float(np.sqrt(patch @ patch))
             if pn == 0.0:
                 continue

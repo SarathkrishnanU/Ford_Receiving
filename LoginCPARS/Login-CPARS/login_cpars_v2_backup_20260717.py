@@ -211,7 +211,7 @@ def _run_in_terminal_context(driver, operation, op_name):
     return False
 
 
-def send_terminal_text(driver, command_text, sensitive=False):
+def send_terminal_text(driver, command_text):
 
     def _type_chars(el):
         for ch in command_text:
@@ -255,8 +255,7 @@ def send_terminal_text(driver, command_text, sensitive=False):
         return False
 
     if _run_in_terminal_context(driver, _op, "Typing terminal text"):
-        display_text = "[hidden]" if sensitive else command_text
-        logger.info(f"Text typed in terminal: {display_text}")
+        logger.info(f"Text typed in terminal: {command_text}")
         return True
 
     return False
@@ -630,7 +629,7 @@ def send_terminal_credentials(driver, username, password):
 
     logger.info("Sending terminal user id")
 
-    if not send_terminal_text(driver, username, sensitive=True):
+    if not send_terminal_text(driver, username):
         raise RuntimeError("Unable to send terminal user id")
 
     logger.info("Terminal user id entered")
@@ -641,7 +640,7 @@ def send_terminal_credentials(driver, username, password):
 
     logger.info("Sending terminal password")
 
-    if send_terminal_text(driver, password, sensitive=True):
+    if send_terminal_text(driver, password):
         time.sleep(0.7)
 
         if not press_terminal_enter(driver):
@@ -659,7 +658,7 @@ def send_terminal_credentials(driver, username, password):
 
     time.sleep(0.7)
 
-    if not send_terminal_text(driver, password, sensitive=True):
+    if not send_terminal_text(driver, password):
         raise RuntimeError("Unable to send terminal password after fallback")
 
     time.sleep(0.7)

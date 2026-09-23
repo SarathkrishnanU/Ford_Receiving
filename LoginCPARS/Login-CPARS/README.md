@@ -1,133 +1,100 @@
-# LoginCPARS - CPARS Automation Tool
+# LoginCPARS Automation App
 
-A Python-based web automation tool for logging into the CPARS system and capturing screenshots.
+LoginCPARS automates CPARS portal login, IBM HOD IMS5 navigation, receipt-history screenshot capture, row completion tracking in Excel, and glyph-based OCR extraction into `OCR_Extracted.xlsx`.
 
-## Features
+## What Is Included
 
-- **Automated Login**: Securely logs into CPARS using credentials
-- **Screenshot Capture**: Takes screenshots at various stages
-- **Error Handling**: Robust error handling with detailed logging
-- **Configurable**: Easy environment variable configuration
-- **Browser Automation**: Uses Selenium for reliable browser control
+- `login_cpars_v2.py` - main automation script.
+- `run_app.py` - bootstrap launcher that creates `.venv`, installs packages, validates OCR/glyph files, then starts the app.
+- `Start-LoginCPARS.bat` - Windows double-click launcher for remote desktops or fresh machines.
+- `Build-LoginCPARS.bat` - optional PyInstaller build wrapper.
+- `src/glyph_ocr.py` and `src/glyph_templates.npz` - fixed-grid IBM 3270 glyph OCR engine and trained glyph template library.
+- `src/ocr_runner.py` - screenshot OCR parser and Excel summary writer.
+- `tools/build_glyph_templates.py` - utility for rebuilding glyph templates if the terminal font, zoom, or resolution changes.
 
-## Quick Start
+## Remote Server Requirements
 
-### Prerequisites
+Use a Windows remote desktop/server session with a visible GUI. The automation drives Microsoft Edge and uses file-selection dialogs, so it cannot run as a headless background service.
 
-- Python 3.8 or higher
-- Google Chrome browser (for default configuration)
-- ChromeDriver matching your Chrome version
+Install these once on the server:
 
-### Installation
+- Python 3.10 or newer.
+- Microsoft Edge.
+- Network access to CPARS and to Python package downloads from PyPI.
 
-1. Clone or download this project
-2. Navigate to the project directory
-3. Create a virtual environment:
-   ```bash
-   python -m venv venv
-   ```
-4. Activate it:
-   - Windows: `venv\Scripts\activate`
-   - macOS/Linux: `source venv/bin/activate`
-5. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+The app installs Python packages automatically into a local `.venv` folder. Edge WebDriver is handled by `webdriver-manager`, with Selenium Manager as fallback.
 
-### Configuration
+## Configuration
 
-1. Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-   ```
-2. Edit `.env` and add your CPARS credentials:
-   ```
-   CPARS_USERNAME=your_username
-   CPARS_PASSWORD=your_password
-   CPARS_URL=https://your-cpars-url.com
-   ```
+1. Copy `.env.example` to `.env` in the same folder as `run_app.py`.
+2. Fill in the values:
 
-### Running
-
-```bash
-python login_cpars.py
+```env
+PORTAL_USERNAME=your_portal_username
+PORTAL_PASSWORD=your_portal_password
+TERMINAL_USERNAME=your_terminal_username
+TERMINAL_PASSWORD=your_terminal_password
+CPARS_URL=https://fsp.portal.covisint.com/ford_en_US/
 ```
 
-## Project Structure
+Do not commit or share `.env`.
 
-```
-Login-CPARS/
-├── .env.example              # Template for environment variables
-├── .gitignore               # Git ignore rules
-├── requirements.txt         # Python dependencies
-├── README.md                # This file
-├── login_cpars.py           # Main entry point
-├── src/
-│   ├── __init__.py
-│   ├── browser.py           # Browser management utilities
-│   ├── login.py             # Login automation logic
-│   └── screenshot.py        # Screenshot utilities
-└── screenshots/             # Output directory for screenshots
+## Run The App
+
+On Windows, double-click:
+
+```bat
+Start-LoginCPARS.bat
 ```
 
-## Usage Example
+Or run from PowerShell:
 
-```python
-from src.browser import BrowserManager
-from src.login import CPARSLogin
-from src.screenshot import ScreenshotManager
+```powershell
+python run_app.py
+```
 
-# Initialize browser
-browser = BrowserManager()
-driver = browser.create_driver()
+On first run, the launcher will:
 
-# Login to CPARS
-login = CPARSLogin(driver)
-login.login_to_cpars("username", "password", "https://cpars.url")
+1. Create `.venv` if it does not exist.
+2. Upgrade `pip`.
+3. Install every package from `requirements.txt`, including Selenium, WebDriver Manager, Excel libraries, Pillow, pandas, NumPy, OpenCV, and PyInstaller.
+4. Validate the OCR chain by importing OpenCV/NumPy/pandas/openpyxl/Pillow/Selenium and loading `src/glyph_templates.npz`.
+5. Start `login_cpars_v2.py`.
 
-# Take screenshot
-screenshot = ScreenshotManager()
-screenshot.take_screenshot(driver, "login_success")
+After startup, select the input Excel file and output screenshot folder when prompted. The app marks completed rows in the workbook, saves cropped terminal screenshots, then runs glyph OCR and writes `OCR_Extracted.xlsx` in the selected output folder.
 
-# Cleanup
-browser.close_driver(driver)
+## Build An EXE
+
+To create a distributable executable folder, double-click:
+
+```bat
+Build-LoginCPARS.bat
+```
+
+The build script bootstraps dependencies first, validates the glyph OCR templates, then runs PyInstaller with `login_cpars_v2.spec`. The output is:
+
+```text
+dist\LoginCPARS_v2\LoginCPARS_v2.exe
+```
+
+The spec bundles the `src` folder, including `src/glyph_templates.npz`, so OCR/glyph recognition is included in the EXE build.
+
+## OCR And Glyph Notes
+
+This project does not use Tesseract. CPARS terminal screenshots are recognised using the fixed 80x24 IBM HOD character grid and the trained glyph library in `src/glyph_templates.npz`.
+
+Only rebuild the glyph library if the IBM terminal font, browser zoom, emulator zoom, or remote desktop display scaling changes enough to affect recognition. The rebuild workflow is documented in `tools/build_glyph_templates.py`:
+
+```powershell
+.\.venv\Scripts\python.exe tools\build_glyph_templates.py --cluster <folder-of-screenshots>
+# edit LABELS in tools\build_glyph_templates.py using _glyphwork\contact_sheet.png
+.\.venv\Scripts\python.exe tools\build_glyph_templates.py --emit
 ```
 
 ## Troubleshooting
 
-### WebDriver Not Found
-- Download ChromeDriver from: https://chromedriver.chromium.org/
-- Ensure version matches your Chrome browser
-- Add to PATH or specify path in configuration
-
-### Login Fails
-- Verify credentials in `.env` file
-- Check CPARS_URL is correct
-- Ensure the website is accessible
-- Check browser console for JavaScript errors
-
-### Screenshot Issues
-- Verify `screenshots/` directory exists
-- Check write permissions
-- Ensure paths are correct in `.env`
-
-## Dependencies
-
-- **selenium**: Web browser automation
-- **python-dotenv**: Environment variable management
-- **Pillow**: Image processing
-- **requests**: HTTP library
-
-See `requirements.txt` for versions.
-
-## Contributing
-
-Feel free to submit issues and enhancement requests!
-
-## License
-
-This project is for authorized CPARS users only.
-
-## Support
-
-For issues or questions, check the logs and review the troubleshooting section above.
+- If startup fails before the app opens, run `python run_app.py --bootstrap-only` from PowerShell and review the printed package or glyph validation error.
+- If OCR fails, confirm `src/glyph_templates.npz` exists and the selected output folder contains readable `.png`, `.jpg`, or `.jpeg` screenshots.
+- If the browser cannot start, confirm Microsoft Edge is installed and the server can download WebDriver packages.
+- If package installation fails, confirm internet access to PyPI or preinstall packages into `.venv` from an approved internal package mirror.
+- Review `LoginCPARS.log` for portal, terminal, screenshot, Excel, and OCR details.

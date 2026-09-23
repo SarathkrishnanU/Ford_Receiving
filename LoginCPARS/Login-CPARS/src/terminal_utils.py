@@ -52,7 +52,7 @@ def _run_in_terminal_context(driver, operation, op_name):
     driver.switch_to.default_content()
     return False
 
-def send_terminal_text(driver, command_text):
+def send_terminal_text(driver, command_text, sensitive=False):
     def _type_chars(el):
         for ch in command_text:
             el.send_keys(ch)
@@ -81,7 +81,8 @@ def send_terminal_text(driver, command_text):
                 logger.debug(f"Text strategy {strategy} failed: {exc}")
         return False
     if _run_in_terminal_context(driver, _op, "Typing terminal text"):
-        logger.info(f"Text typed in terminal: {command_text}")
+        display_text = "[hidden]" if sensitive else command_text
+        logger.info(f"Text typed in terminal: {display_text}")
         return True
     return False
 
